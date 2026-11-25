@@ -20,6 +20,18 @@ model:
   league_avg_goals: 1.40
   home_advantage: 1.10
 
+# ---- Team strength model (model/team_strength.py) -------------------------
+# Time-decayed Poisson fit on football-data.co.uk results; replaces FPL's strength_*
+# fields (0 in the live API). league_avg_goals/home_advantage above are only used
+# for the legacy strength fallback.
+team_model:
+  league: E0
+  seasons: ["2526", "2627"]
+  cache_max_age_hours: 12  # CSVs cached under DATA_DIR/cache/
+  xi: 0.0019               # time decay per day (half-life ~1 year)
+  goals_weight: 0.5        # target = 0.5*goals + 0.5*xG (goals only when xG missing)
+  ridge_sigma: 0.2         # shrink att/def toward league average (helps promoted teams)
+
 # ---- LLM judge (optional) -------------------------------------------------
 judge:
   enabled: false

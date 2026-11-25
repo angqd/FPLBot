@@ -8,7 +8,9 @@ For each player and each upcoming GW in the horizon:
   clean_sheet  = P(CS) * cs_pts[pos],  P(CS) = exp(-opp_expected_goals)          (Poisson)
   defcon       = P(hit DC threshold) * 2                                          (2025/26+ rule)
   conceded     = -opp_expected_goals / 2   for GK/DEF
-  opp_expected_goals / atk_mult come from FPL's own team strength ratings + home advantage.
+  opp_expected_goals / atk_mult / P(CS) come from a TeamModel (model/team_strength.py:
+  time-decayed Poisson fit on results + xG). atk_mult = team_xg / league_avg.
+  FPL's own strength_* fields are only used as a fallback when they're non-zero (they're 0 live).
 
 Doubles sum both fixtures, blanks give 0. GW+1 is blended with FPL's own `ep_next`, which
 already bakes in news/injury info the stat model can't see.
@@ -62,6 +64,33 @@ def _expected_goals(team: dict, opp: dict, home: bool, cfg: dict) -> float:
     return cfg["league_avg_goals"] * ratio ** 2.0 * ha  # ^2 widens spread to realistic range
 
 
+_STRENGTH_KEYS = ("strength_attack_home", "strength_attack_away", "strength_defence_home", "strength_defence_away")
+
+
+class StrengthTeamModel:
+    """Legacy adapter: FPL's strength_* ratings behind the TeamModel interface."""
+
+    def __init__(self, teams: list[dict], cfg: dict):
+        self.strengths, self.cfg = _team_strengths(teams), cfg
+        self.league_avg = cfg["league_avg_goals"]
+
+    def expected_goals(self, team_id: int, opp_id: int, home: bool) -> float:
+        return _expected_goals(self.strengths[team_id], self.strengths[opp_id], home, self.cfg)
+
+    def p_clean_sheet(self, team_id: int, opp_id: int, home: bool) -> float:
+        return math.exp(-self.expected_goals(opp_id, team_id, not home))
+
+
+def _default_team_model(bootstrap: dict, cfg: dict):
+    teams = bootstrap["teams"]
+    if all(_f(t.get(k)) > 0 for t in teams for k in _STRENGTH_KEYS):
+        return StrengthTeamModel(teams, cfg)
+    raise ValueError(
+        "bootstrap team strength_attack_*/strength_defence_* fields are 0 or missing (as in the live "
+        "FPL API), so they can't be used. Pass team_model=fit_team_model(bootstrap, cfg) "
+        "(fplbot.model.team_strength) to project().")
+
+
 def _p_plays(p: dict, gws_played: int) -> tuple[float, float]:
     """Return (P(appears), expected minutes | appears)."""
     if p.get("status") in ("i", "s", "u", "n"):
@@ -78,9 +107,21 @@ def _p_plays(p: dict, gws_played: int) -> tuple[float, float]:
     return p_app, min(90, exp_min)
 
 
-def project(bootstrap: dict, fixtures: list[dict], start_gw: int, horizon: int, cfg: dict) -> pd.DataFrame:
+def project(bootstrap: dict, fixtures: list[dict], start_gw: int, horizon: int, cfg: dict,
+            team_model=None) -> pd.DataFrame:
+    """`team_model` needs .expected_goals(team, opp, home), .p_clean_sheet(team, opp, home) and
+    .league_avg (see model/team_strength.TeamModel). If None, FPL's strength_* fields are used,
+    which only works when they are non-zero."""
     scoring = DEFAULT_SCORING
-    strengths = _team_strengths(bootstrap["teams"])
+    tm = team_model if team_model is not None else _default_team_model(bootstrap, cfg)
+    league_avg = tm.league_avg
+    match_cache: dict[tuple[int, int, bool], tuple[float, float]] = {}
+
+    def match(team: int, opp: int, home: bool) -> tuple[float, float]:
+        key = (team, opp, home)
+        if key not in match_cache:
+            match_cache[key] = (tm.expected_goals(team, opp, home), tm.p_clean_sheet(team, opp, home))
+        return match_cache[key]
     gws_played = max(1, start_gw - 1)
 
     by_team_gw: dict[tuple[int, int], list[tuple[int, bool]]] = {}
@@ -112,14 +153,13 @@ def project(bootstrap: dict, fixtures: list[dict], start_gw: int, horizon: int, 
         for gw in range(start_gw, start_gw + horizon):
             xp = 0.0
             for opp_id, home in by_team_gw.get((team, gw), []):
-                me, opp = strengths[team], strengths[opp_id]
-                team_xg = _expected_goals(me, opp, home, cfg)
-                opp_xg = _expected_goals(opp, me, not home, cfg)
-                atk_mult = team_xg / cfg["league_avg_goals"]
+                team_xg, p_cs = match(team, opp_id, home)
+                opp_xg = match(opp_id, team, not home)[0]
+                atk_mult = team_xg / league_avg
                 pts = 2 if exp_min >= 60 else 1
                 pts += (xg90 * scoring["goal"][pos] + xa90 * scoring["assist"]) * m * atk_mult
                 if exp_min >= 60:
-                    pts += math.exp(-opp_xg) * scoring["cs"][pos]
+                    pts += p_cs * scoring["cs"][pos]
                 thr = scoring["defcon_threshold"][pos]
                 if dc90 and thr < 99:
                     pts += scoring["defcon"] / (1 + math.exp(-1.2 * (dc90 * m - thr)))
