@@ -11,6 +11,14 @@ so the solver rolls exactly when "save it and do two next week" scores higher th
 Free-transfer dynamics (exact, linearised with one binary z_t per GW):
     paid_t = max(0, n_t - ft_t)                    (hits)
     ft_{t+1} = min(cap, ft_t - n_t + paid_t + 1)
+
+Wildcard / Free Hit (SquadState.unlimited_first_gw): the first GW of the plan has unlimited free
+transfers (no hits, no max_transfers_per_gw cap), like the draft GW. FT carry-over assumption
+(2024/25+ FPL rule): moves made under the chip don't consume banked FTs, so the next GW gets
+min(cap, free_transfers + 1) where free_transfers is the count banked *before* the chip. FPL's
+my-team hides that count while a chip is active (limit: null), so the CLI passes 1, a
+conservative under-estimate. Out of scope: a Free Hit squad reverts to the pre-chip squad the
+following GW; the solver models it as a permanent change (i.e. treats it like a Wildcard).
 """
 from __future__ import annotations
 
@@ -26,7 +34,8 @@ from fplbot.config import SQUAD_SHAPE, XI_MAX, XI_MIN
 class SquadState:
     picks: dict[int, float] = field(default_factory=dict)  # player_id -> selling price (£m)
     bank: float = 100.0
-    free_transfers: int = 1
+    free_transfers: int = 1  # banked FTs; with unlimited_first_gw, the count banked before the chip
+    unlimited_first_gw: bool = False  # Wildcard / Free Hit active this GW: transfers free + uncapped
 
     @property
     def is_draft(self) -> bool:
@@ -104,6 +113,12 @@ def solve(
             m += ft[gws[1] if len(gws) > 1 else t + 1] == 1
             m += z[t] == 0
             continue
+        if state.unlimited_first_gw and i == 0:  # wildcard / free hit: free, uncapped moves
+            m += paid[t] == 0
+            m += z[t] == 0
+            # banked FTs carry through the chip (+1). Free Hit revert next GW: not modelled.
+            m += ft[gws[1] if len(gws) > 1 else t + 1] <= state.free_transfers + 1
+            continue
         m += n[t] <= cfg["max_transfers_per_gw"]
         m += paid[t] >= n[t] - ft[t]
         m += paid[t] <= n[t] - ft[t] + M * (1 - z[t])
@@ -149,7 +164,7 @@ def solve(
             "transfers_in": [info(p) for p in P if v(buy[p][t])],
             "transfers_out": [{**info(p), "sell": sell[p]} for p in P if v(out[p][t])],
             "hits": v(paid[t]),
-            "rolled": v(n[t]) == 0 and not (state.is_draft and t == t0),
+            "rolled": v(n[t]) == 0 and not ((state.is_draft or state.unlimited_first_gw) and t == t0),
             "starting_xi": [info(p) for p in sorted(starters, key=lambda p: pos[p])],
             "bench": [info(p) for p in bench],
             "captain": info(capt), "vice": info(vice),

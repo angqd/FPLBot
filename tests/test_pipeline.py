@@ -72,3 +72,40 @@ def test_candidates_are_distinct_and_payloads_build(data):
             assert len(tx["transfers"]) == len(g["transfers_in"])
         lu = build_lineup_payload(g)
         assert len(lu["picks"]) == 15 and sum(p["is_captain"] for p in lu["picks"]) == 1
+
+
+def _weak_squad(bs, proj):
+    """Legal 15 of the lowest-xPts players (<=3 per club), so a wildcard wants many moves."""
+    team_of = {p["id"]: p["team"] for p in bs["elements"]}
+    picks, clubs = {}, Counter()
+    for pos, cnt in SQUAD_SHAPE.items():
+        got = 0
+        for r in proj[proj.pos == pos].sort_values("xp_total").itertuples():
+            if got == cnt:
+                break
+            if clubs[team_of[r.id]] < 3:
+                picks[r.id] = float(r.cost)
+                clubs[team_of[r.id]] += 1
+                got += 1
+    return picks, team_of
+
+
+def test_unlimited_first_gw_allows_many_free_transfers(data):
+    bs, _, proj = data
+    picks, team_of = _weak_squad(bs, proj)
+    bank = 100.0 - sum(picks.values())
+    wc = solve(proj, SquadState(picks=picks, bank=bank, free_transfers=1, unlimited_first_gw=True), CFG)
+    g0 = wc["gameweeks"][0]
+    _check_squad(g0, team_of)
+    assert len(g0["transfers_in"]) > 5 > CFG["max_transfers_per_gw"]
+    assert g0["hits"] == 0 and not g0["rolled"]
+    for g in wc["gameweeks"][1:]:  # normal rules again after the chip
+        _check_squad(g, team_of)
+        assert g["hits"] == 0 and len(g["transfers_in"]) <= CFG["max_transfers_per_gw"]
+        assert len(g["transfers_in"]) <= g["free_transfers"] <= CFG["max_free_transfers"]
+    assert wc["gameweeks"][1]["free_transfers"] <= 2  # banked 1 carries through the chip, +1
+
+    normal = solve(proj, SquadState(picks=picks, bank=bank, free_transfers=1), CFG)
+    n0 = normal["gameweeks"][0]
+    assert len(n0["transfers_in"]) <= 1 and n0["hits"] == 0
+    assert wc["objective"] > normal["objective"]

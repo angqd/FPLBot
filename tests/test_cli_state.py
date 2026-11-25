@@ -49,13 +49,22 @@ def test_parse_missing_selling_price_raises():
         cli.parse_my_team(_team(picks=bad))
 
 
-def test_state_from_api_unlimited_uses_cap():
-    class FakeClient:
-        def my_team(self, entry):
-            return _team(limit=None, status="unlimited")
+class _FakeClient:
+    def __init__(self, team):
+        self.team = team
 
-    s = cli._state_from_api(FakeClient(), 1, max_free_transfers=5)
-    assert s.free_transfers == 5 and s.bank == pytest.approx(4.1)
+    def my_team(self, entry):
+        return self.team
+
+
+def test_state_from_api_unlimited_sets_flag():
+    s = cli._state_from_api(_FakeClient(_team(limit=None, status="unlimited")), 1)
+    assert s.unlimited_first_gw and s.free_transfers == 1 and s.bank == pytest.approx(4.1)
+
+
+def test_state_from_api_normal_has_no_flag():
+    s = cli._state_from_api(_FakeClient(_team(limit=2, made=0)), 1)
+    assert not s.unlimited_first_gw and s.free_transfers == 2
 
 
 # ---- offline loading -------------------------------------------------------
@@ -176,3 +185,58 @@ def test_auth_writes_rotated_token_to_selected_env(tmp_path, isolated_env):
 def test_cli_profile_missing_env_file_errors(isolated_env):
     r = CliRunner().invoke(cli.app, ["--profile", "definitely-not-a-profile-xyz", "draft", "--offline", "tests/fixtures"])
     assert r.exit_code == 2 and "does not exist" in r.output
+
+
+# ---- scripts/viability_check.py profile selection ----------------------------
+
+def _load_viability():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("viability_check", config.ROOT / "scripts" / "viability_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_viability_check_honours_profile(tmp_path, isolated_env):
+    from fplbot.data import auth
+
+    vc = _load_viability()
+    isolated_env.setattr(config, "ROOT", tmp_path)  # resolve_env_file reads ROOT at call time
+    (tmp_path / ".env").write_text("FPL_REFRESH_TOKEN=default-should-not-be-used\n")
+    bot = tmp_path / ".env.bot"
+    bot.write_text("FPL_REFRESH_TOKEN=old\nFPL_TOKEN_URL=https://example.invalid/token\nFPL_CLIENT_ID=cid\n")
+
+    assert vc.select_env(["--profile", "bot"]) == bot
+    assert config.ENV_FILE == bot
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"access_token": "acc", "expires_in": 3600, "refresh_token": "new"}
+
+    sent = []
+    isolated_env.setattr(auth.httpx, "post", lambda *a, **k: sent.append(k.get("data")) or Resp())
+    vc.check_1b()
+    assert vc.results["1b"] == "PASS"  # rotation detected in .env.bot
+    assert sent[0]["refresh_token"] == "old"  # used the bot profile's token
+    assert "new" in bot.read_text()
+    assert "default-should-not-be-used" in (tmp_path / ".env").read_text()
+
+
+def test_viability_check_env_vars_and_errors(tmp_path, isolated_env):
+    vc = _load_viability()
+    isolated_env.setattr(config, "ROOT", tmp_path)
+    (tmp_path / ".env.bot").write_text("")
+    isolated_env.setenv("FPLBOT_PROFILE", "bot")
+    assert vc.select_env([]) == tmp_path / ".env.bot"
+    explicit = tmp_path / "custom.env"
+    explicit.write_text("")
+    isolated_env.setenv("FPLBOT_ENV_FILE", str(explicit))
+    assert vc.select_env(["--profile", "bot"]) == explicit.resolve()
+    isolated_env.delenv("FPLBOT_ENV_FILE")
+    with pytest.raises(SystemExit):
+        vc.select_env(["--profile", "missing"])
+    with pytest.raises(SystemExit):
+        vc.select_env(["--profile", "../evil"])
