@@ -8,7 +8,7 @@ Fully automated FPL manager: pull data weekly, project points, draft a squad, th
 either roll the free transfer or make up to two (no -4 hits by default), set XI + captain,
 and submit — with minimal manual work.
 
-## Status (as of 2026-11-24)
+## Status (as of 2026-11-26)
 | Area | State |
 |---|---|
 | Data ingest (`data/fpl_client.py`, `data/store.py`) | Written. **Never run against the live API** (scaffold built in a sandbox with no FPL access). |
@@ -18,7 +18,8 @@ and submit — with minimal manual work.
 | Auth (`data/auth.py`) | Written against PingOne OIDC refresh-token flow. **Unverified** — token URL, client_id, and form fields are placeholders from .env. |
 | Executor (`execute/executor.py`) | Builds transfer + lineup payloads. **Payload shapes unverified** against current FPL. `dry_run: true` by default. |
 | Scheduler (`.github/workflows/weekly.yml`) | Written, never run. |
-| Tests | 4 pass: `python tests/make_fixture.py && pytest -q` |
+| Phase 2 projections | **Done, gate passed** (2026-11-26). Minutes model, shrinkage, DefCon Poisson tail, bonus blend (`model/xpts.py`); promoted-club prior + odds target (`model/team_strength.py`, `model/odds.py`). Backtest `fplbot backtest` (`eval/`): next-GW MAE 1.94 vs FPL ep 2.33 on 2026/27 GW2-11. Next: tune with `evaluate_configs()`, blend_fpl_ep -> ~0. |
+| Tests | 57 pass: `python tests/make_fixture.py && pytest -q` |
 
 ## STEP 1 — Viability gate (do this before ANY other work)
 The project isn't confirmed viable yet. Before improving the model, adding features or

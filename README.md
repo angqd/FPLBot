@@ -44,6 +44,7 @@ rotates the token and writes the new one back to `.env` on each use.
 |---|---|
 | `--offline latest` | Run on the newest saved snapshot, with no network calls |
 | `--offline tests/fixtures` | Run on synthetic data (`python tests/make_fixture.py` first) |
+| `fplbot backtest` | Score past gameweeks: our projections vs FPL's expected points |
 | `--profile bot` | Use `.env.bot` and a separate decision history, for a second team |
 
 Settings live in `config.yaml`: planning horizon, free-transfer value, hits allowed, and
@@ -58,8 +59,8 @@ included GitHub Actions workflow.
 ## Status
 
 - Working against the live API: login, selling prices, payloads, draft and plan (dry run).
-- In progress: better projections (minutes model, shrinkage, DefCon, bonus, odds) and a
-  backtest against FPL's own expected points.
+- Projections (minutes model, shrinkage, DefCon, bonus, betting odds) beat FPL's own
+  expected points in a backtest of past gameweeks.
 - Not yet: chips, price-change timing, live submission.
 
 See `HANDOFF.md` for the project's current state, and
