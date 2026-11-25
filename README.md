@@ -1,64 +1,72 @@
-# fplbot — automated Fantasy Premier League manager
+# fplbot
+
+An automated Fantasy Premier League manager. Each gameweek it pulls FPL data, projects
+points for every player, works out the best transfers, picks the XI and captain, and
+submits them. It runs in dry-run mode until you turn submitting on.
+
+## How it works
 
 ```
- ingest ──► project (xPts) ──► optimise (MILP) ──► [LLM judge] ──► execute
- FPL API     per player/GW      squad, XI, C,       picks 1 of K     POST transfers
- snapshots   deterministic      roll-vs-transfer    solver plans     + lineup
+ ingest  ──►  project  ──►  optimise  ──►  judge (optional)  ──►  execute
+ FPL API      points per    squad, XI,      LLM picks one of      transfers
+ snapshots    player/GW     captain, roll   the solver's plans    + lineup
 ```
 
-## Why this shape
+1. **Ingest.** Reads the official FPL API (prices, fixtures, injuries, xG, xA, DefCon) and
+   saves a snapshot each run.
+2. **Project.** Estimates expected points per player per gameweek. Team attack and defence
+   ratings come from a Poisson model fitted to this season's results and xG.
+3. **Optimise.** An integer program picks transfers over the next few gameweeks within the
+   budget, squad shape and 3-per-club rules. It decides between rolling a free transfer and
+   using it because banked transfers are part of the model.
+4. **Judge.** Optional. An LLM can choose between the solver's top plans using team news.
+   It can't invent moves. If it fails, the bot takes the solver's best plan.
+5. **Execute.** Sends the transfers and lineup to FPL. Dry run by default.
 
-**Data: the official FPL API is enough. No scraping needed.** `bootstrap-static/` already
-carries prices, ownership, status/news, `ep_next`, xG/90, xA/90, defensive contributions/90,
-saves/90, bonus, and team strength ratings. `fixtures/` has every fixture by GW. FotMob or
-Firecrawl would only add noise and maintenance. Add Understat/FBref later only if you want
-richer shot data (`soccerdata` package), behind the same `project()` interface.
-
-**Decision: deterministic core, LLM on top.** The MILP is the right tool for the hard part:
-budget, 2/5/5/3, max 3 per club, XI formation, and free-transfer banking (up to 5,
-2026/27 rules). An LLM can't reliably respect those constraints. What an LLM *is* good at
-is soft context like press-conference news. So the solver emits K distinct legal plans and
-the LLM can only choose an index. If the LLM fails, the bot falls back to the solver's
-optimum.
-
-**Roll vs. transfer is solved, not hand-coded.** Free transfers are a state variable in the
-model, so "roll this week, make two next week" happens exactly when it scores higher over
-the horizon. `max_transfers_per_gw: 2` and `allow_hits: false` encode the policy.
-
-## Setup
+## Quick start
 
 ```bash
 pip install -e ".[judge,dev]"
-cp .env.example .env        # fill FPL_ENTRY_ID + OIDC values (see comments in the file)
-fplbot ingest               # first snapshot
-fplbot draft                # best £100m squad for the next GW (enter it in the FPL UI once)
-fplbot plan                 # transfers/roll plan for your live team
-fplbot run --force          # the full weekly job (dry-run until you flip execute.dry_run)
+cp .env.example .env     # add your FPL team id and refresh token
+fplbot ingest            # take a data snapshot
+fplbot draft             # best £100m squad for the next gameweek
+fplbot plan              # transfer plan for your current team
+fplbot run --force       # the full weekly job (dry run)
 ```
 
-Offline / CI: `python tests/make_fixture.py && fplbot draft --offline tests/fixtures`, `pytest`.
-`--offline` also takes an ingest snapshot (`data/raw/<ts>/`, gzipped) or `latest` (newest snapshot).
+To get your refresh token, log in at https://fantasy.premierleague.com/ and open DevTools.
+Copy `refresh_token` from the localStorage entry that starts with `oidc.user:`. The bot
+rotates the token and writes the new one back to `.env` on each use.
 
-Second account (profiles): `cp .env.example .env.bot`, fill it for the other account, then
-`fplbot --profile bot plan` (or `FPLBOT_PROFILE=bot`). The profile loads only `.env.bot`, writes
-its rotated refresh token back there, and keeps its decisions DB in `data/bot/` so idempotency
-records don't collide with the main account; public-data snapshots in `data/raw/` stay shared.
-`FPLBOT_ENV_FILE=/path/to/envfile` selects an env file explicitly. `.env.*` files are gitignored.
+## Useful options
+
+| Option | What it does |
+|---|---|
+| `--offline latest` | Run on the newest saved snapshot, with no network calls |
+| `--offline tests/fixtures` | Run on synthetic data (`python tests/make_fixture.py` first) |
+| `--profile bot` | Use `.env.bot` and a separate decision history, for a second team |
+
+Settings live in `config.yaml`: planning horizon, free-transfer value, hits allowed, and
+`execute.dry_run`.
 
 ## Scheduling
-`fplbot run` is idempotent. Every invocation snapshots data (this builds price and form
-history). It only decides inside `hours_before_deadline` of the next deadline, and at most
-once per GW. Run it a few times a day from the included GitHub Actions workflow, or from cron
-on any box.
 
-## Known gaps / next steps
-1. **Auth bootstrap is manual once.** FPL moved to PingOne OIDC. Copy the refresh token,
-   token URL and client_id from DevTools. Verify the token-request fields and the
-   `/api/transfers/` payload against one manual transfer before setting `dry_run: false`.
-2. **Initial squad creation** isn't exposed in the API. Enter the drafted squad in the UI once.
-3. **Chips** (wildcard, free hit, bench boost, triple captain) aren't modelled yet. A wildcard
-   is just `solve()` with unlimited free moves in GW1, which is how draft mode works.
-4. **Price changes** aren't predicted. Snapshots accumulate `transfers_in_event` /
-   `transfers_out_event`, which is what you'd need for a price-change model.
-5. **Backtesting:** raw snapshots are kept gzipped in `data/raw/`. Replay them with
-   `--offline`, or train a learned xPts model on vaastav/Fantasy-Premier-League history.
+`fplbot run` is safe to call often. It always takes a snapshot, but it only makes a decision
+in the hours before a deadline, and at most once per gameweek. Run it from cron or the
+included GitHub Actions workflow.
+
+## Status
+
+- Working against the live API: login, selling prices, payloads, draft and plan (dry run).
+- In progress: better projections (minutes model, shrinkage, DefCon, bonus, odds) and a
+  backtest against FPL's own expected points.
+- Not yet: chips, price-change timing, live submission.
+
+See `VIABILITY_LOG.md` for test results, `HANDOFF.md` for the project's current state, and
+`docs/research/report.md` for the research and roadmap.
+
+## Tests
+
+```bash
+python tests/make_fixture.py && pytest -q
+```
