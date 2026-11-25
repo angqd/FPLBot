@@ -15,10 +15,38 @@ max_per_club: 3
 
 # ---- Projection model -----------------------------------------------------
 model:
-  blend_fpl_ep: 0.35       # weight of FPL's own ep_next in GW+1 projection
-  min_minutes_for_rates: 270
-  league_avg_goals: 1.40
-  home_advantage: 1.10
+  blend_fpl_ep: 0.35       # weight of FPL's own ep_next in GW+1 projection (0 = pure model)
+  league_avg_goals: 1.40   # legacy strength_* fallback only
+  home_advantage: 1.10     # legacy strength_* fallback only
+  minutes:                 # xMins model (bootstrap-static only)
+    start_prior: 0.40      # P(start) prior; shrinks starts/eligible team games
+    start_prior_games: 1   # k, in games
+    start_mins_prior: 75   # E[minutes | start] prior
+    start_mins_k: 2        # k, in starts
+    sub_mins: 22           # minutes of a typical sub appearance
+    sub_prior: 0.35        # P(sub appearance | fit, not started) prior
+    sub_prior_games: 3
+    p60_intercept: 0.024    # P(60+ | start) = clip(a + b * E[minutes | start], 0, 1)
+    p60_slope: 0.0111
+    doubtful_default: 0.5  # status 'd' with no chance % given
+    recovery_per_gw: 0.15  # unknown-return injury: availability regained per GW
+    suspension_recovery_per_gw: 0.5
+    return_fitness: 0.8    # availability once a dated return ("Expected back 20 Dec") passes
+  shrinkage:               # post = (mins*rate + k*prior) / (mins + k), prior by position x price band
+    price_bands: [5.0, 6.0, 7.5, 9.5]
+    prior_min_minutes: 1800  # a band with fewer total minutes uses the position prior
+    k: {xg: 600, xa: 600, dc: 270, saves: 450, bonus: 900}   # minutes
+  defcon:                  # 2 pts, capped, per match (premierleague.com, confirmed for 2026/27)
+    threshold: {DEF: 10, MID: 12, FWD: 12}   # DEF: CBIT; MID/FWD: CBIRT. GK not eligible
+    dispersion: 0          # negative-binomial size r; 0 = Poisson (best log-lik on 2026/27 starts)
+  bonus:
+    blend: 0.5             # weight on shrunk season bonus/90; (1 - blend) on the event model
+    event:                 # E[bonus] per expected event (per save for GKP); NNLS fit on 2026/27
+                           # GW1-11 per-match data (post-BPS-change). GKP goal: no data, = DEF
+      GKP: {goal: 1.13, assist: 1.07, cs: 0.85, saves: 0.038, defcon: 0.0, p60: 0.0}
+      DEF: {goal: 1.13, assist: 0.45, cs: 0.48, saves: 0.0, defcon: 0.05, p60: 0.0}
+      MID: {goal: 1.38, assist: 0.51, cs: 0.01, saves: 0.0, defcon: 0.05, p60: 0.023}
+      FWD: {goal: 1.60, assist: 0.14, cs: 0.05, saves: 0.0, defcon: 0.0, p60: 0.011}
 
 # ---- Team strength model (model/team_strength.py) -------------------------
 # Time-decayed Poisson fit on football-data.co.uk results; replaces FPL's strength_*
