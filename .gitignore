@@ -10,3 +10,4 @@ data/raw/
 data/*.sqlite
 data/cache/
 .DS_Store
+.claude/

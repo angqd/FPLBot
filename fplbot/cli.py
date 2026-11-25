@@ -42,6 +42,17 @@ def main(profile: str = typer.Option(None, "--profile", envvar="FPLBOT_PROFILE",
         typer.echo(f"[profile {profile}] env={env_file.name} state={fpl_config.STATE_DIR}", err=True)
 
 
+def _project(bs, fx, gw: int, cfg: dict, offline: Path | None):
+    """Projection with the fitted team model (FPL's strength_* fields are 0 since 2026/27)."""
+    from fplbot.model.team_strength import fit_team_model, parse_results_csv
+
+    results = None
+    if offline and str(offline) != "latest" and (Path(offline) / "results.csv").exists():
+        results = parse_results_csv((Path(offline) / "results.csv").read_text())
+    tm = fit_team_model(bs, cfg, results=results, offline=bool(offline) and results is None)
+    return project(bs, fx, gw, cfg["horizon"], cfg["model"], team_model=tm)
+
+
 def _load(offline: Path | None, save: bool = True):
     if offline:
         if str(offline) == "latest":
@@ -117,7 +128,7 @@ def draft(offline: Path = typer.Option(None), config: Path = typer.Option(None),
     cfg = load_config(config).raw
     bs, fx = _load(offline)
     gw = store.current_gw(bs)
-    proj = project(bs, fx, gw, cfg["horizon"], cfg["model"])
+    proj = _project(bs, fx, gw, cfg, offline)
     plan = solve(proj, SquadState(bank=cfg["budget"]), cfg)
     _print_plan(plan, first_only=True)
     if out:
@@ -136,7 +147,7 @@ def plan(offline: Path = typer.Option(None), config: Path = typer.Option(None),
     else:
         from fplbot.data.auth import OIDCAuth
         state = _state_from_api(FPLClient(auth=OIDCAuth()), cfg.entry_id, cfg.max_free_transfers)
-    proj = project(bs, fx, gw, cfg.horizon, cfg.model)
+    proj = _project(bs, fx, gw, cfg.raw, offline)
     _print_plan(solve(proj, state, cfg.raw))
 
 
@@ -163,7 +174,7 @@ def run(config: Path = typer.Option(None), force: bool = typer.Option(False, hel
         raise typer.Exit()
 
     state = _state_from_api(client, cfg.entry_id, cfg.max_free_transfers)
-    proj = project(bs, fx, gw, cfg.horizon, cfg.model)
+    proj = _project(bs, fx, gw, cfg.raw, None)
     j = cfg.judge
     plans = candidate_plans(proj, state, cfg.raw, j["candidates"] if j["enabled"] else 1)
     idx, reason = (judge(plans, dict(zip(proj.id, proj.news)), j["model"]) if j["enabled"] else (0, "solver optimum"))
