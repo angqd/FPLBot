@@ -16,7 +16,7 @@ import time
 import httpx
 from dotenv import set_key
 
-from fplbot.config import ENV_FILE
+from fplbot import config
 
 
 class OIDCAuth:
@@ -27,7 +27,7 @@ class OIDCAuth:
         self._access: str | None = None
         self._exp = 0.0
         if not (self.token_url and self.client_id and self.refresh_token):
-            raise RuntimeError("Missing FPL_TOKEN_URL / FPL_CLIENT_ID / FPL_REFRESH_TOKEN in .env")
+            raise RuntimeError(f"Missing FPL_TOKEN_URL / FPL_CLIENT_ID / FPL_REFRESH_TOKEN in {config.ENV_FILE}")
 
     def invalidate(self):
         self._access, self._exp = None, 0.0
@@ -51,6 +51,7 @@ class OIDCAuth:
         new_rt = tok.get("refresh_token")
         if new_rt and new_rt != self.refresh_token:  # PingOne rotates refresh tokens
             self.refresh_token = new_rt
-            if ENV_FILE.exists():
-                set_key(str(ENV_FILE), "FPL_REFRESH_TOKEN", new_rt)
+            env_file = config.ENV_FILE  # the active profile's .env, read at call time
+            if env_file.exists():
+                set_key(str(env_file), "FPL_REFRESH_TOKEN", new_rt)
         return self._access

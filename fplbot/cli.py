@@ -4,28 +4,49 @@
   fplbot draft             build the best £100m squad from scratch for the next GW
   fplbot plan              plan transfers/roll for your real team (needs auth)
   fplbot run               the weekly job: ingest -> plan -> (judge) -> execute if in window
-Add --offline PATH to any command to use a saved bootstrap/fixtures pair instead of the API.
+--offline PATH uses a saved bootstrap/fixtures pair instead of the API: a dir with
+{bootstrap,fixtures}.json (tests/fixtures), an ingest snapshot dir (data/raw/<ts>/ with .json.gz),
+data/raw itself (newest snapshot), or the literal `latest` (newest snapshot in DATA_DIR/raw).
+--profile NAME (before the command) loads ROOT/.env.NAME and keeps decisions in DATA_DIR/NAME/.
 """
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 
+from fplbot import config as fpl_config
 from fplbot.config import POSITIONS, load_config
 from fplbot.data import store
 from fplbot.data.fpl_client import FPLClient
 from fplbot.model.xpts import project
 from fplbot.optimize.solver import SquadState, candidate_plans, solve
 
+log = logging.getLogger(__name__)
 app = typer.Typer(add_completion=False, no_args_is_help=True)
+
+
+@app.callback()
+def main(profile: str = typer.Option(None, "--profile", envvar="FPLBOT_PROFILE",
+                                     help="Use ROOT/.env.NAME and a separate decisions DB (second account).")):
+    if profile:
+        try:
+            env_file = fpl_config.activate_profile(profile)
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="--profile") from e
+        if not env_file.exists():
+            raise typer.BadParameter(f"{env_file} does not exist", param_hint="--profile")
+        typer.echo(f"[profile {profile}] env={env_file.name} state={fpl_config.STATE_DIR}", err=True)
 
 
 def _load(offline: Path | None, save: bool = True):
     if offline:
-        return json.loads((offline / "bootstrap.json").read_text()), json.loads((offline / "fixtures.json").read_text())
+        if str(offline) == "latest":
+            return store.load_latest()
+        return store.load_dir(offline)
     c = FPLClient()
     bs, fx = c.bootstrap(), c.fixtures()
     if save:
@@ -49,13 +70,40 @@ def _print_plan(plan: dict, first_only: bool = False):
             typer.echo("   bench: " + ", ".join(p["name"] for p in g["bench"]))
 
 
-def _state_from_api(client: FPLClient, entry: int) -> SquadState:
-    t = client.my_team(entry)
-    picks = {p["element"]: p["selling_price"] / 10 for p in t["picks"]}
-    tr = t.get("transfers", {})
-    limit = tr.get("limit") or 1
-    ft = max(1, limit - tr.get("made", 0))
-    return SquadState(picks=picks, bank=tr.get("bank", 0) / 10, free_transfers=ft)
+def parse_my_team(t: dict) -> tuple[dict[int, float], float, int | None, bool]:
+    """Parse a my-team/{entry}/ payload -> (picks {element: selling £m}, bank £m, ft, unlimited).
+
+    Free transfers follow the FPL web app: `limit is None ? 0 : max(limit - made, 0)`.
+    `limit: null` or `status: "unlimited"` means a wildcard / free hit is active, so transfers
+    are not capped: returns ft=None, unlimited=True. Selling prices come only from
+    picks[].selling_price (never now_cost: that would break the budget constraint)."""
+    picks = {}
+    for p in t["picks"]:
+        sp = p.get("selling_price")
+        if sp is None:
+            raise ValueError(f"my-team pick {p.get('element')} has no selling_price; refusing to guess "
+                             "(now_cost would overstate the budget)")
+        picks[p["element"]] = sp / 10
+    tr = t.get("transfers") or {}
+    if "bank" not in tr:
+        raise ValueError("my-team payload has no transfers.bank")
+    limit = tr.get("limit")
+    unlimited = limit is None or tr.get("status") == "unlimited"
+    ft = None if unlimited else max(limit - tr.get("made", 0), 0)
+    return picks, tr["bank"] / 10, ft, unlimited
+
+
+def _state_from_api(client: FPLClient, entry: int, max_free_transfers: int = 5) -> SquadState:
+    picks, bank, ft, unlimited = parse_my_team(client.my_team(entry))
+    if unlimited:
+        # SquadState has no "unlimited" flag yet; the cap is the closest approximation and
+        # under-uses the chip (it still treats moves beyond the cap as hits / disallowed).
+        msg = (f"Transfers are UNCAPPED this GW (wildcard/free hit active). Planning with "
+               f"free_transfers={max_free_transfers} as an approximation, not truly unlimited.")
+        log.warning(msg)
+        typer.secho("WARNING: " + msg, fg="yellow", err=True)
+        ft = max_free_transfers
+    return SquadState(picks=picks, bank=bank, free_transfers=ft)
 
 
 @app.command()
@@ -87,7 +135,7 @@ def plan(offline: Path = typer.Option(None), config: Path = typer.Option(None),
         state = SquadState({int(k): v for k, v in s["picks"].items()}, s["bank"], s["free_transfers"])
     else:
         from fplbot.data.auth import OIDCAuth
-        state = _state_from_api(FPLClient(auth=OIDCAuth()), cfg.entry_id)
+        state = _state_from_api(FPLClient(auth=OIDCAuth()), cfg.entry_id, cfg.max_free_transfers)
     proj = project(bs, fx, gw, cfg.horizon, cfg.model)
     _print_plan(solve(proj, state, cfg.raw))
 
@@ -114,7 +162,7 @@ def run(config: Path = typer.Option(None), force: bool = typer.Option(False, hel
         typer.echo(f"GW{gw} already executed.")
         raise typer.Exit()
 
-    state = _state_from_api(client, cfg.entry_id)
+    state = _state_from_api(client, cfg.entry_id, cfg.max_free_transfers)
     proj = project(bs, fx, gw, cfg.horizon, cfg.model)
     j = cfg.judge
     plans = candidate_plans(proj, state, cfg.raw, j["candidates"] if j["enabled"] else 1)
