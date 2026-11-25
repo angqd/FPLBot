@@ -107,6 +107,9 @@ Write each result into the "Viability results" table below as you go.
    Secrets: write to persist the rotated token; the snapshot-commit step is moot now `data/raw/` is ignored.
 8. Mirror account: user to create `.env.bot`, then `python scripts/viability_check.py --profile bot`.
 9. Notifications (Telegram/email) after each decision.
+10. Product idea: natural-language playstyle rules ("never double up on defence"). The LLM compiles
+    them into a small typed rule schema that becomes solver constraints or penalties; the solver still
+    picks players. Report the points each rule costs. Fits Phase 4 next to the news extractor.
 
 ## Gotchas
 - Cloud sandbox couldn't reach fantasy.premierleague.com — use `--offline tests/fixtures` there.
