@@ -1,8 +1,11 @@
 """Viability gate checks 1b-1d. READ-ONLY: never POSTs to FPL.
 
-  python scripts/viability_check.py
+  python scripts/viability_check.py [--profile NAME]
 
-1b  refresh token -> access token; confirms the rotated refresh token was written to .env
+--profile NAME (or FPLBOT_PROFILE) checks ROOT/.env.NAME; FPLBOT_ENV_FILE overrides the path.
+Same selection as fplbot/config.py, and OIDCAuth writes the rotated token back to that file.
+
+1b  refresh token -> access token; confirms the rotated refresh token was written to the env file
 1c  GET my-team/{entry}/: selling/purchase prices, bank, free transfers; checks the half-profit rule
 1d  builds the transfer + lineup payloads from your real squad and checks their shape against
     what the FPL web app sends (taken from fantasy.premierleague.com's JS bundle, 2026-11-25)
@@ -10,11 +13,14 @@ Never prints tokens.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
+from pathlib import Path
 
-from fplbot.config import ENV_FILE, load_config
+from fplbot import config as fpl_config
+from fplbot.config import load_config
 from fplbot.data.auth import OIDCAuth
 from fplbot.data.fpl_client import FPLClient
 from fplbot.execute.executor import build_lineup_payload, build_transfer_payload
@@ -28,8 +34,22 @@ WEB_PICK_KEYS = {"element", "position", "is_captain", "is_vice_captain"}
 results: dict[str, str] = {}
 
 
+def select_env(argv: list[str] | None = None) -> Path:
+    """Parse --profile and activate it (FPLBOT_ENV_FILE > .env.<profile> > .env), like the CLI."""
+    ap = argparse.ArgumentParser(description="Viability checks 1b-1d (read-only).")
+    ap.add_argument("--profile", default=None, help="use ROOT/.env.NAME (default: FPLBOT_PROFILE or .env)")
+    args = ap.parse_args(argv)
+    try:
+        env_file = fpl_config.activate_profile(args.profile)
+    except ValueError as e:
+        ap.error(str(e))
+    if not env_file.exists():
+        ap.error(f"{env_file} does not exist")
+    return env_file
+
+
 def env_hash() -> str:
-    for line in ENV_FILE.read_text().splitlines():
+    for line in fpl_config.ENV_FILE.read_text().splitlines():  # read at call time: active profile
         if line.startswith("FPL_REFRESH_TOKEN="):
             return hashlib.sha256(line.encode()).hexdigest()[:12]
     return "missing"
@@ -43,7 +63,7 @@ def check_1b() -> OIDCAuth:
     after = env_hash()
     rotated = before != after
     print(f"  access token received: {bool(tok)} (length {len(tok)})")
-    print(f"  refresh token rotated and written to .env: {rotated}")
+    print(f"  refresh token rotated and written to {fpl_config.ENV_FILE.name}: {rotated}")
     results["1b"] = "PASS" if tok else "FAIL"
     if not rotated:
         results["1b"] += " (no rotation seen; fine if PingOne reuses tokens, but check)"
@@ -120,7 +140,9 @@ def check_1d(team: dict, elements: dict, entry: int, gw: int):
     results["1d"] = "PASS: shapes match the web app" if not problems else "FAIL: " + "; ".join(problems)
 
 
-def main():
+def main(argv: list[str] | None = None):
+    env_file = select_env(argv)
+    print(f"[profile {fpl_config.PROFILE or 'default'}] env={env_file.name}")
     cfg = load_config()
     auth = check_1b()
     client = FPLClient(auth=auth)
@@ -129,8 +151,8 @@ def main():
         me = client._req("GET", "me/", authed=True) or {}
         entry = (me.get("player") or {}).get("entry")
         if not entry:
-            sys.exit("Could not find your team id via me/; set FPL_ENTRY_ID in .env")
-        print(f"  team id from me/: {entry}  (add FPL_ENTRY_ID={entry} to .env)")
+            sys.exit(f"Could not find your team id via me/; set FPL_ENTRY_ID in {env_file.name}")
+        print(f"  team id from me/: {entry}  (add FPL_ENTRY_ID={entry} to {env_file.name})")
     bs = client.bootstrap()
     elements = {e["id"]: e for e in bs["elements"]}
     gw = next(e["id"] for e in bs["events"] if e.get("is_next"))

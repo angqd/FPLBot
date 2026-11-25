@@ -105,16 +105,12 @@ def parse_my_team(t: dict) -> tuple[dict[int, float], float, int | None, bool]:
     return picks, tr["bank"] / 10, ft, unlimited
 
 
-def _state_from_api(client: FPLClient, entry: int, max_free_transfers: int = 5) -> SquadState:
+def _state_from_api(client: FPLClient, entry: int) -> SquadState:
     picks, bank, ft, unlimited = parse_my_team(client.my_team(entry))
     if unlimited:
-        # SquadState has no "unlimited" flag yet; the cap is the closest approximation and
-        # under-uses the chip (it still treats moves beyond the cap as hits / disallowed).
-        msg = (f"Transfers are UNCAPPED this GW (wildcard/free hit active). Planning with "
-               f"free_transfers={max_free_transfers} as an approximation, not truly unlimited.")
-        log.warning(msg)
-        typer.secho("WARNING: " + msg, fg="yellow", err=True)
-        ft = max_free_transfers
+        # Wildcard / free hit active: first GW is free + uncapped. my-team hides the pre-chip FT
+        # count, so assume 1 banked (conservative) for carry-over into GW+1. See solver docstring.
+        return SquadState(picks=picks, bank=bank, free_transfers=1, unlimited_first_gw=True)
     return SquadState(picks=picks, bank=bank, free_transfers=ft)
 
 
@@ -144,10 +140,11 @@ def plan(offline: Path = typer.Option(None), config: Path = typer.Option(None),
     gw = store.current_gw(bs)
     if state_file:
         s = json.loads(state_file.read_text())
-        state = SquadState({int(k): v for k, v in s["picks"].items()}, s["bank"], s["free_transfers"])
+        state = SquadState({int(k): v for k, v in s["picks"].items()}, s["bank"], s["free_transfers"],
+                           s.get("unlimited_first_gw", False))
     else:
         from fplbot.data.auth import OIDCAuth
-        state = _state_from_api(FPLClient(auth=OIDCAuth()), cfg.entry_id, cfg.max_free_transfers)
+        state = _state_from_api(FPLClient(auth=OIDCAuth()), cfg.entry_id)
     proj = _project(bs, fx, gw, cfg.raw, offline)
     _print_plan(solve(proj, state, cfg.raw))
 
@@ -174,7 +171,7 @@ def run(config: Path = typer.Option(None), force: bool = typer.Option(False, hel
         typer.echo(f"GW{gw} already executed.")
         raise typer.Exit()
 
-    state = _state_from_api(client, cfg.entry_id, cfg.max_free_transfers)
+    state = _state_from_api(client, cfg.entry_id)
     proj = _project(bs, fx, gw, cfg.raw, None)
     j = cfg.judge
     plans = candidate_plans(proj, state, cfg.raw, j["candidates"] if j["enabled"] else 1)
