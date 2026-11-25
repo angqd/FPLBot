@@ -62,7 +62,7 @@ included GitHub Actions workflow.
   backtest against FPL's own expected points.
 - Not yet: chips, price-change timing, live submission.
 
-See `VIABILITY_LOG.md` for test results, `HANDOFF.md` for the project's current state, and
+See `HANDOFF.md` for the project's current state, and
 `docs/research/report.md` for the research and roadmap.
 
 ## Tests
