@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fplbot: the case for a deterministic FPL manager with an LLM on a short leash</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <p class="brand">fplbot</p>
+  <nav class="toc" aria-label="Contents">
+    <ol>
+      <li><a href="#pitch">The pitch</a></li>
+      <li><a href="#where-we-stand">Where we stand</a>
+        <ul>
+          <li><a href="#numbers">Headline numbers</a></li>
+          <li><a href="#gate">Viability gate</a></li>
+          <li><a href="#bugs">Bugs found in the code</a></li>
+        </ul>
+      </li>
+      <li><a href="#plan">The plan, layer by layer</a>
+        <ul>
+          <li><a href="#layer-1">1. Team strength</a></li>
+          <li><a href="#layer-2">2. Player projections</a></li>
+          <li><a href="#layer-3">3. The optimiser</a></li>
+          <li><a href="#layer-4">4. The LLM</a></li>
+        </ul>
+      </li>
+      <li><a href="#edges">Cheap edges worth taking</a></li>
+      <li><a href="#ideas">Five ideas borrowed from other games</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a href="#risks">Risks and open questions</a></li>
+      <li><a href="#sources">Sources</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+<div class="content">
+
+<header>
+  <p class="eyebrow">Research report</p>
+  <h1>fplbot: the case for a deterministic FPL manager with an LLM on a short leash</h1>
+  <p class="asof">As of 25 Nov 2026. Built from six research passes over about 120 sources, plus live checks against the FPL API.</p>
+</header>
+
+<section id="pitch" class="hero-section">
+  <div class="hero">
+    <h2>The pitch</h2>
+    <p class="lead">We can build a bot that manages an FPL team every week with no manual work, and it doesn't need machine learning to be good. The best public tools all share one shape. A team-strength model feeds player projections, those feed a mixed-integer solver, and humans or news checks adjust minutes. fplbot already has that shape. What it lacks is the tuning those tools have, plus one fix that is urgent because the bot crashes on live data today.</p>
+    <p>The LLM's job is narrow. It reads injury news and nudges minutes estimates within hard limits. It never picks players. LLMs asked to solve constrained problems directly get them wrong most of the time, and the research on that is clear.</p>
+    <p>Two things still stand between us and a working bot. We haven't confirmed that FPL gives us your selling prices, and we haven't checked the format of the transfer request. Both need your browser login and take about 20 minutes.</p>
+  </div>
+</section>
+
+<section id="where-we-stand">
+  <h2>Where we stand</h2>
+
+  <div id="numbers">
+    <h3>Headline numbers</h3>
+    <ul class="stats">
+      <li class="stat"><span class="num">674</span><span class="cap">Players in the live API this season</span></li>
+      <li class="stat"><span class="num">109</span><span class="cap">Data fields per player. The model uses 16</span></li>
+      <li class="stat warn"><span class="num">0</span><span class="cap">Value FPL now returns for every team's attack and defence strength. This crashes the model</span></li>
+      <li class="stat"><span class="num">110</span><span class="cap">Finished matches this season with goals, xG and odds on football-data.co.uk, which is enough to replace those ratings</span></li>
+      <li class="stat"><span class="num">4 / 4</span><span class="cap">Offline tests passing</span></li>
+      <li class="stat"><span class="num">27 Nov, 18:30 UTC</span><span class="cap">Next deadline (GW12)</span></li>
+    </ul>
+  </div>
+
+  <div id="gate">
+    <h3>Viability gate</h3>
+    <ul class="status-list">
+      <li><span class="check">Public data (1a)</span><span class="pill amber">Partial pass</span><p class="notes">All player fields are present. Team strengths are zeroed, so <code>project()</code> raises ZeroDivisionError</p></li>
+      <li><span class="check">Login (1b)</span><span class="pill blue">Waiting on you</span><p class="notes">FPL's login server confirms the token URL and that refresh tokens are supported</p></li>
+      <li><span class="check">Selling prices, bank, free transfers (1c)</span><span class="pill blue">Waiting on you</span><p class="notes">Essential. If FPL doesn't return selling prices, we stop</p></li>
+      <li><span class="check">Transfer and lineup request format (1d)</span><span class="pill blue">Waiting on you</span><p class="notes">Needs one real transfer captured in DevTools</p></li>
+    </ul>
+  </div>
+
+  <aside id="bugs" class="callout" aria-labelledby="bugs-h">
+    <h3 id="bugs-h">Bugs found in the code</h3>
+    <ul>
+      <li><code>model/xpts.py</code> divides by the team strength average, which is now 0.</li>
+      <li><code>cli.py</code> never lets free transfers drop below 1, so after you use your transfer the bot thinks it still has one.</li>
+      <li><code>fplbot --offline</code> can't read the gzipped snapshots that <code>fplbot ingest</code> writes.</li>
+      <li>The bonus term predates the 2026/27 BPS changes, so it overrates defenders with high CBI counts.</li>
+    </ul>
+  </aside>
+</section>
+
+<section id="plan">
+  <h2>The plan, layer by layer</h2>
+  <p class="layer-intro">Each layer below says what fplbot does now, what it should do, and the evidence.</p>
+
+  <article class="layer urgent" id="layer-1">
+    <h3>1. Team strength <span class="pill red">Urgent</span></h3>
+    <div class="shift">
+      <div class="now"><span class="label">Now</span><p>Reads FPL's team strength fields, which are all 0.</p></div>
+      <span class="arrow" aria-hidden="true">&rarr;</span>
+      <div class="change"><span class="label">Change</span><p>Fit a Dixon-Coles model on goals and xG from football-data.co.uk, weighting recent matches more (half-life about a year). Pull ratings toward last season's to stop early-season noise. For next gameweek only, blend in betting odds at 70 to 80 percent weight.</p></div>
+    </div>
+    <div class="why"><span class="label">Why</span><p>Bookmaker odds are the most accurate public forecast of match outcomes. Hvattum and Arntzen found Elo ratings worse than odds. Solio, one of the newer FPL tools, builds its projections on sharp odds. The Dixon-Coles fit covers gameweeks the odds don't reach yet.</p></div>
+    <div class="effort"><span class="badge">Effort</span><p>Half a day to a day for the model. One more day for the odds blend.</p></div>
+  </article>
+
+  <article class="layer" id="layer-2">
+    <h3>2. Player projections</h3>
+    <div class="shift">
+      <div class="now"><span class="label">Now</span><p>A hand-tuned formula on xG and xA per 90, blended 35 percent with FPL's own <code>ep_next</code>.</p></div>
+      <span class="arrow" aria-hidden="true">&rarr;</span>
+      <div class="change"><span class="label">Change</span><p>Four upgrades, in order of payoff.</p>
+        <ol>
+          <li>A real minutes model. Predict the chance of starting from recent starts, rest days and squad depth, gated by FPL's injury percentage. Minutes are the biggest source of error in every tool we looked at.</li>
+          <li>Shrink per-90 rates toward the position average and weight recent games more. A player with 200 minutes and two lucky goals stops looking like Haaland.</li>
+          <li>Treat defensive contribution as a probability of hitting the threshold (10 for defenders, 12 for midfielders and forwards). A quick check against 2025/26 data was close. Senesi predicted 70.8 percent, actual 70.3. Collins predicted 49.9, actual 50.</li>
+          <li>Recalibrate bonus for the 2026/27 BPS rules.</li>
+        </ol>
+      </div>
+    </div>
+    <div class="why">
+      <span class="label">Why not ML.</span>
+      <p>Weekly FPL points are mostly noise. The gap between good models is small.</p>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead><tr><th>Model</th><th>Error</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td>OpenFPL (open-source ML ensemble)</td><td class="num-cell">RMSE 1.52</td><td>3 to 4 point players, one GW ahead</td></tr>
+            <tr><td>FPL Review (commercial)</td><td class="num-cell">RMSE 1.59</td><td>Same test. FPL Review was better at spotting who won't play</td></tr>
+            <tr><td>Onside</td><td class="num-cell">MAE 2.53</td><td>Players with 60+ minutes, GW1 to 11 this season. Vendor's own numbers</td></tr>
+            <tr><td>FPL ep_next</td><td class="num-cell">MAE 2.71</td><td>Same test</td></tr>
+            <tr><td>Last-4 form</td><td class="num-cell">MAE 2.97</td><td>Same test</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>ML buys about 5 percent at best and needs a data pipeline we don't have. We can add a small LightGBM correction later if the backtest shows room.</p>
+    </div>
+    <div class="effort"><span class="badge">Effort</span><p>About a week, including a harness that freezes each week's projections and scores them against what happened.</p></div>
+  </article>
+
+  <article class="layer" id="layer-3">
+    <h3>3. The optimiser</h3>
+    <div class="shift">
+      <div class="now"><span class="label">Now</span><p>A PuLP and CBC model over 5 gameweeks. Transfers capped at 2 a week, a flat bench weight, and free transfers only valued at the end of the horizon.</p></div>
+      <span class="arrow" aria-hidden="true">&rarr;</span>
+      <div class="change"><span class="label">Change</span><p>Copy the settings that FPL-Optimization-Tools (the strongest open solver) and FPL Review have converged on.</p></div>
+    </div>
+    <div class="table-wrap" tabindex="0">
+      <table>
+        <thead><tr><th>Setting</th><th class="col-now">fplbot now</th><th class="col-rec">Recommended</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Solver</td><td class="col-now">CBC</td><td class="col-rec">HiGHS</td><td>Both top tools use it. PuLP 4 dropped the CBC call we use</td></tr>
+          <tr><td>Horizon</td><td class="col-now">5 GWs</td><td class="col-rec">6 to 8, no transfers in the last 1 or 2</td><td>FOT, FPL Review</td></tr>
+          <tr><td>Free transfer value</td><td class="col-now">1.0 at horizon end only</td><td class="col-rec">2.0, 1.6, 1.3, 1.1 for the 2nd to 5th banked FT, counted every week</td><td>FOT</td></tr>
+          <tr><td>Bench weight</td><td class="col-now">0.10 flat</td><td class="col-rec">0.03 sub keeper, 0.21 first sub, 0.06 second, near 0 third</td><td>FOT</td></tr>
+          <tr><td>Money in the bank</td><td class="col-now">Ignored</td><td class="col-rec">0.08 points per million</td><td>FOT</td></tr>
+          <tr><td>Transfers per week</td><td class="col-now">Max 2</td><td class="col-rec">Up to the free transfers you have, still no hits</td><td>With a cap of 2, a bank of 5 can never be used</td></tr>
+          <tr><td>Candidate plans</td><td class="col-now">Differ in this week's buys</td><td class="col-rec">Differ in this week's buys and sells</td><td>FOT</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="why">
+      <span class="label">Uncertainty.</span>
+      <p>Nobody serious uses formal robust optimisation for FPL. They add noise to the projections, re-solve 20 to 100 times and count which moves keep winning. FPL Review scores the top three moves 3, 2 and 1 in each run. A move that wins most runs is solid. A move that only wins the clean run is a coin flip. We should do the same and hand the vote counts to the LLM.</p>
+    </div>
+    <div class="effort"><span class="badge">Effort</span><p>Three to four days for the settings and the voting. Chips (wildcard, free hit, bench boost, triple captain) are a bigger job and come later.</p></div>
+  </article>
+
+  <article class="layer" id="layer-4">
+    <h3>4. The LLM</h3>
+    <div class="shift">
+      <div class="now"><span class="label">Now</span><p>Picks one of K solver plans by index, sees only plan summaries and news strings.</p></div>
+      <span class="arrow" aria-hidden="true">&rarr;</span>
+      <div class="change"><span class="label">Change</span>
+        <p>Give it a better job. It reads injury news and press conference quotes and returns, for each affected player, a start probability and a minutes multiplier, plus the exact quote it relied on. Code enforces the limits:</p>
+        <ul>
+          <li>Clamp every number.</li>
+          <li>A low-confidence call can move FPL's injury percentage by 25 points at most.</li>
+          <li>Drop any adjustment whose quote isn't in the source text word for word.</li>
+          <li>Adjust at most 15 players a week.</li>
+        </ul>
+        <p>The solver then re-runs with the new minutes. The judge role stays, but only as a tie-breaker between plans within about 1.5 expected points of the best. It sees the plans twice in shuffled order. If its two answers disagree, plan 0 wins.</p>
+      </div>
+    </div>
+    <div class="why"><span class="label">Why</span><p>On ConstraintBench, frontier LLMs produced a valid answer only 44.5 to 65 percent of the time, and the best answer only 8.5 to 30.5 percent. An LLM-based FPL tool (ChatFPL) recommended Solanke after he'd changed clubs. Reading news and turning it into a number is the one part of this job LLMs are good at.</p></div>
+    <div class="why"><span class="label">Before we trust it</span><p>Run it in shadow mode for 4 to 6 gameweeks. Keep it only if its start predictions beat FPL's injury percentage and its picks score at least as well as plan 0.</p></div>
+    <div class="effort"><span class="badge">Effort</span><p>One to two weeks.</p></div>
+  </article>
+</section>
+
+<section id="edges">
+  <h2>Cheap edges worth taking</h2>
+  <div class="table-wrap" tabindex="0">
+    <table>
+      <thead><tr><th>Edge</th><th>Estimated gain</th><th>Effort</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Better free transfer and hit rules</td><td class="num-cell">5 to 15 pts a season</td><td>Medium</td><td>Our estimate. No study has measured it</td></tr>
+        <tr><td>Make price-rising transfers before the overnight update</td><td class="num-cell">2 to 8 pts a season</td><td>Small</td><td>Our estimate. FPL's API now publishes its own rise and fall forecast</td></tr>
+        <tr><td>Value team value</td><td class="num-cell">About 20 pts per £1m over a season</td><td>Small</td><td>Fantasy Football Scout, 2019. May be dated</td></tr>
+        <tr><td>Triple captain in the best double gameweek</td><td class="num-cell">Not measured</td><td>Small</td><td>Standard advice</td></tr>
+        <tr><td>Ownership-aware picks</td><td class="num-cell">Near zero for points</td><td>Small</td><td>Only matters when chasing a rank target</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">The price forecast is the surprise. FPL's API now returns how close each player is to a price change, with a likelihood score from minus 5 to plus 5. On the day we checked, Hill was at 110 percent and Andrey Santos at minus 103 percent. We don't need to build a predictor, only to read theirs.</p>
+</section>
+
+<section id="ideas">
+  <h2>Five ideas borrowed from other games</h2>
+  <p>We surveyed 14 methods from baseball, NBA and NFL daily fantasy, F1 fantasy, cricket and betting. These five transfer best, all deterministic.</p>
+  <ol class="ideas">
+    <li><h3>Shrinkage and recency weighting, from baseball's Marcel system.</h3><p>Weight recent seasons more and pull toward the average. Marcel gets most of the way to far more complex projection systems. Small effort, no new data.</p></li>
+    <li><h3>Separate minutes from per-minute output, from NBA daily fantasy.</h3><p>When a starter is out, give his share of team xG to his replacement. Small to medium effort.</p></li>
+    <li><h3>Dixon-Coles team ratings, from betting.</h3><p>This is the fix for the zeroed strengths. Medium effort.</p></li>
+    <li><h3>Force variety into the candidate plans, from Hunter, Vielma and Zaman's daily fantasy work.</h3><p>Each plan must differ by one or two transfers, so the judge isn't choosing between near-copies. Combine with the noise voting. Small effort.</p></li>
+    <li><h3>Value what's left at the end of the horizon and add chip variables, from FPL research and F1 fantasy solvers.</h3><p>This stops the bot burning transfers just before the planning window ends. Small to medium effort.</p></li>
+  </ol>
+  <p>We passed on deep reinforcement learning. Dream11's cricket results came from its own staff with no significance tests, and it needs far more data than we have. Matthews and colleagues did reach the top 1 percent of 2.5 million FPL players with a Bayesian model in 2012, but their approach is heavy to build and our MILP gets most of the benefit.</p>
+</section>
+
+<section id="roadmap">
+  <h2>Roadmap</h2>
+  <ol class="timeline">
+    <li class="phase now">
+      <h3>0. Finish the viability gate <span class="pill green">Now</span></h3>
+      <dl>
+        <dt>What ships</dt><dd>Your login captured, selling prices checked, transfer format matched</dd>
+        <dt>Time</dt><dd>20 minutes of your time</dd>
+      </dl>
+    </li>
+    <li class="gate"><strong>Gate to move on</strong>Selling prices exist and payloads match. If not, we stop</li>
+    <li class="phase">
+      <h3>1. Unblock live runs</h3>
+      <dl>
+        <dt>What ships</dt><dd>Dixon-Coles team model, free transfer floor fix, offline snapshot fix</dd>
+        <dt>Time</dt><dd>1 to 2 days</dd>
+      </dl>
+    </li>
+    <li class="gate"><strong>Gate to move on</strong><code>fplbot draft</code> and <code>plan</code> run cleanly on live data</li>
+    <li class="phase">
+      <h3>2. Better projections</h3>
+      <dl>
+        <dt>What ships</dt><dd>Minutes model, shrinkage, DefCon probability, bonus fix, odds blend, scoring harness</dd>
+        <dt>Time</dt><dd>About 1 week</dd>
+      </dl>
+    </li>
+    <li class="gate"><strong>Gate to move on</strong>Our error beats <code>ep_next</code> on frozen projections</li>
+    <li class="phase">
+      <h3>3. Optimiser upgrades</h3>
+      <dl>
+        <dt>What ships</dt><dd>HiGHS, new settings, noise voting</dd>
+        <dt>Time</dt><dd>3 to 4 days</dd>
+      </dl>
+    </li>
+    <li class="gate"><strong>Gate to move on</strong>4 to 6 gameweeks in dry-run shadow mode, then your OK to submit for real</li>
+    <li class="phase">
+      <h3>4. LLM and extras</h3>
+      <dl>
+        <dt>What ships</dt><dd>News extractor, tie-break judge, price timing, triple captain, then chips</dd>
+        <dt>Time</dt><dd>1 to 2 weeks</dd>
+      </dl>
+    </li>
+    <li class="gate"><strong>Gate to move on</strong>Shadow-mode results beat plan 0</li>
+  </ol>
+  <p class="note">Nothing gets submitted to FPL until phase 3 passes and you say so.</p>
+</section>
+
+<section id="risks">
+  <h2>Risks and open questions</h2>
+  <ul class="risks">
+    <li><strong>Selling prices.</strong> If <code>my-team</code> doesn't return them, the budget maths breaks and the project stops. This is the biggest unknown.</li>
+    <li><strong>Login tokens.</strong> FPL rotates the refresh token on every use. Running the bot on your laptop and in GitHub Actions at the same time will kill one of them.</li>
+    <li><strong>FPL changes things mid-season.</strong> The team strength fields went to zero without notice. Anything we read from the API can do the same, so the model must fail loudly, not quietly.</li>
+    <li><strong>Estimates, not measurements.</strong> The season gains for transfers and price timing are our estimates. The shrinkage settings and blend weights need tuning by backtest.</li>
+    <li><strong>Scraping.</strong> Fantasy Football Scout's terms ban automated extraction. The LLM should read FPL's own news fields and official club pages only.</li>
+    <li><strong>Odds feed.</strong> football-data.co.uk's upcoming-fixtures file was empty when we checked. The Odds API free tier (500 credits a month) is the fallback, at about 20 to 40 credits a gameweek.</li>
+  </ul>
+</section>
+
+<section id="sources" class="sources">
+  <h2>Sources</h2>
+
+  <h3>Solvers</h3>
+  <ul>
+    <li><a href="https://raw.githubusercontent.com/sertalpbilal/FPL-Optimization-Tools/main/dev/solver.py" target="_blank" rel="noopener noreferrer">FPL-Optimization-Tools solver code</a><span class="domain">raw.githubusercontent.com</span></li>
+    <li><a href="https://docs.fplreview.com/the-model/solvers/settings/" target="_blank" rel="noopener noreferrer">FPL Review solver settings</a><span class="domain">docs.fplreview.com</span></li>
+    <li><a href="https://docs.fplreview.com/the-model/solvers/sensitivity-analysis/" target="_blank" rel="noopener noreferrer">FPL Review sensitivity analysis</a><span class="domain">docs.fplreview.com</span></li>
+    <li><a href="https://github.com/alan-turing-institute/airsenal" target="_blank" rel="noopener noreferrer">AIrsenal</a><span class="domain">github.com</span></li>
+    <li><a href="https://raw.githubusercontent.com/coin-or/pulp/master/HISTORY" target="_blank" rel="noopener noreferrer">PuLP changelog</a><span class="domain">raw.githubusercontent.com</span></li>
+  </ul>
+
+  <h3>Papers</h3>
+  <ul>
+    <li><a href="https://ojs.aaai.org/index.php/AAAI/article/view/8259" target="_blank" rel="noopener noreferrer">Matthews et al. 2012, Bayesian FPL agent</a><span class="domain">ojs.aaai.org</span></li>
+    <li><a href="https://arxiv.org/html/2505.02170v3" target="_blank" rel="noopener noreferrer">Ramezani and Dinh 2025, MILP for FPL</a><span class="domain">arxiv.org</span></li>
+    <li><a href="https://arxiv.org/html/2508.09992v1" target="_blank" rel="noopener noreferrer">OpenFPL</a><span class="domain">arxiv.org</span></li>
+    <li><a href="https://arxiv.org/html/2405.02412v1" target="_blank" rel="noopener noreferrer">Ridge vs LightGBM vs CNN for FPL</a><span class="domain">arxiv.org</span></li>
+    <li><a href="https://arxiv.org/abs/1604.01455v3" target="_blank" rel="noopener noreferrer">Hunter, Vielma and Zaman, daily fantasy integer programming</a><span class="domain">arxiv.org</span></li>
+    <li><a href="https://arxiv.org/html/2602.22465v1" target="_blank" rel="noopener noreferrer">ConstraintBench</a><span class="domain">arxiv.org</span></li>
+    <li><a href="https://ideas.repec.org/a/eee/intfor/v26yi3p460-470.html" target="_blank" rel="noopener noreferrer">Hvattum and Arntzen, Elo vs odds</a><span class="domain">ideas.repec.org</span></li>
+  </ul>
+
+  <h3>Projections and rules</h3>
+  <ul>
+    <li><a href="https://docs.fplreview.com/the-model/projections/xmins" target="_blank" rel="noopener noreferrer">FPL Review xMins</a><span class="domain">docs.fplreview.com</span></li>
+    <li><a href="https://onsidearena.com/vs/fantasy-football-hub" target="_blank" rel="noopener noreferrer">Onside accuracy log</a><span class="domain">onsidearena.com</span></li>
+    <li><a href="https://blogs.fangraphs.com/index.php/behind-the-monkey/" target="_blank" rel="noopener noreferrer">Marcel projections</a><span class="domain">blogs.fangraphs.com</span></li>
+    <li><a href="https://www.premierleague.com/en/news/4361991" target="_blank" rel="noopener noreferrer">DefCon rules</a><span class="domain">www.premierleague.com</span></li>
+    <li><a href="https://www.fantasyfootballscout.co.uk/2026/07/20/fpl-2026-27-5-rule-changes-new-features-announced" target="_blank" rel="noopener noreferrer">2026/27 rule changes</a><span class="domain">www.fantasyfootballscout.co.uk</span></li>
+    <li><a href="https://github.com/vaastav/Fantasy-Premier-League" target="_blank" rel="noopener noreferrer">vaastav FPL history</a><span class="domain">github.com</span></li>
+  </ul>
+
+  <h3>Betting and team models</h3>
+  <ul>
+    <li><a href="https://www.football-data.co.uk/mmz4281/2627/E0.csv" target="_blank" rel="noopener noreferrer">football-data.co.uk 2026/27 results</a><span class="domain">www.football-data.co.uk</span></li>
+    <li><a href="https://penaltyblog.readthedocs.io/en/latest/models/example.html" target="_blank" rel="noopener noreferrer">penaltyblog</a><span class="domain">penaltyblog.readthedocs.io</span></li>
+    <li><a href="https://the-odds-api.com/" target="_blank" rel="noopener noreferrer">The Odds API</a><span class="domain">the-odds-api.com</span></li>
+  </ul>
+
+  <h3>Decision edges and LLMs</h3>
+  <ul>
+    <li><a href="https://www.fantasyfootballscout.co.uk/2019/09/12/the-value-of-team-value/" target="_blank" rel="noopener noreferrer">Value of team value</a><span class="domain">www.fantasyfootballscout.co.uk</span></li>
+    <li><a href="https://onefpl.com/blog/fpl-price-change-predictor-explained-2026-27" target="_blank" rel="noopener noreferrer">FPL price predictor explained</a><span class="domain">onefpl.com</span></li>
+    <li><a href="https://thenextweb.com/news/ai-is-killing-fantasy-football-fpl" target="_blank" rel="noopener noreferrer">ChatFPL and stale knowledge</a><span class="domain">thenextweb.com</span></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/structured-outputs" target="_blank" rel="noopener noreferrer">Claude structured outputs</a><span class="domain">platform.claude.com</span></li>
+  </ul>
+</section>
+
+</div>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.toc a');
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var targets = Object.keys(map).map(function (id) { return document.getElementById(id); }).filter(Boolean);
+  if (!('IntersectionObserver' in window)) return;
+  var current = null;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        if (current) current.classList.remove('active');
+        current = map[e.target.id];
+        current.classList.add('active');
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px', threshold: 0 });
+  targets.forEach(function (t) { io.observe(t); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# ---- Strategy -------------------------------------------------------------
+horizon: 5                 # gameweeks to look ahead when planning
+decay: 0.85                # weight of GW t+k is decay**k (future is less certain)
+bench_weight: 0.10         # value of bench points (autosub insurance)
+ft_value: 1.0              # value (pts) of each free transfer carried past the horizon
+max_transfers_per_gw: 2    # "roll or use up to two" policy
+allow_hits: false          # set true to let the solver take -4s when worth it
+hit_cost: 4
+max_free_transfers: 5      # 2026/27 rule: bank up to 5 FTs
+min_gain_per_transfer: 0.5 # ignore transfers that gain less than this over the horizon
+
+# ---- Squad rules ----------------------------------------------------------
+budget: 100.0
+max_per_club: 3
+
+# ---- Projection model -----------------------------------------------------
+model:
+  blend_fpl_ep: 0.35       # weight of FPL's own ep_next in GW+1 projection
+  min_minutes_for_rates: 270
+  league_avg_goals: 1.40
+  home_advantage: 1.10
+
+# ---- LLM judge (optional) -------------------------------------------------
+judge:
+  enabled: false
+  model: claude-sonnet-5-5
+  candidates: 4            # solver produces N distinct plans, the LLM picks one
+
+# ---- Execution ------------------------------------------------------------
+execute:
+  dry_run: true            # NOTHING is submitted until you flip this
+  hours_before_deadline: 6 # decision window opens this long before the deadline
