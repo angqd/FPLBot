@@ -7,7 +7,11 @@ __pycache__/
 tests/fixtures/
 .venv/
 data/raw/
-data/*.sqlite
+*.sqlite
+*.sqlite-journal
+data/*/
+!data/.gitkeep
+data/eval/
 data/cache/
 .DS_Store
 .claude/
