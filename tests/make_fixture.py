@@ -88,8 +88,10 @@ def _round_robin(names):
 
 
 def simulate_results(att: dict, dfn: dict, mu=0.25, home=0.25, seasons=2, current_rounds=0,
-                     seed=11, start=date(2024, 8, 17)) -> pd.DataFrame:
-    """Poisson results (goals + noisy xG) from known ratings, football-data column layout."""
+                     seed=11, start=date(2024, 8, 17), odds: bool = True, margin: float = 0.05) -> pd.DataFrame:
+    """Poisson results (goals + noisy xG) from known ratings, football-data column layout.
+    With `odds`, adds AvgH/AvgD/AvgA and Avg>2.5/Avg<2.5 priced from the true λ with a
+    bookmaker margin (no extra random draws, so the other columns are unchanged)."""
     rng = np.random.default_rng(seed)
     names = sorted(att)
     rows = []
@@ -103,8 +105,22 @@ def simulate_results(att: dict, dfn: dict, mu=0.25, home=0.25, seasons=2, curren
             rows.append({"Date": d.strftime("%d/%m/%Y"), "HomeTeam": h, "AwayTeam": a,
                          "FTHG": int(rng.poisson(lh)), "FTAG": int(rng.poisson(la)),
                          "HxG": round(float(lh * rng.gamma(8, 1 / 8)), 2),
-                         "AxG": round(float(la * rng.gamma(8, 1 / 8)), 2)})
-    return pd.DataFrame(rows)
+                         "AxG": round(float(la * rng.gamma(8, 1 / 8)), 2),
+                         "_lh": lh, "_la": la})
+    df = pd.DataFrame(rows)
+    if odds and len(df):
+        from scipy.stats import poisson
+        k = np.arange(16)
+        ph = poisson.pmf(k[None, :], df["_lh"].to_numpy()[:, None])
+        pa = poisson.pmf(k[None, :], df["_la"].to_numpy()[:, None])
+        joint = ph[:, :, None] * pa[:, None, :]
+        p_h = np.tril(joint, -1).sum((1, 2))  # home goals > away goals
+        p_a = np.triu(joint, 1).sum((1, 2))
+        p_d = 1 - p_h - p_a
+        p_o = 1 - poisson.cdf(2, df["_lh"].to_numpy() + df["_la"].to_numpy())
+        for col, p in (("AvgH", p_h), ("AvgD", p_d), ("AvgA", p_a), ("Avg>2.5", p_o), ("Avg<2.5", 1 - p_o)):
+            df[col] = np.round(1 / (p * (1 + margin)), 2)
+    return df.drop(columns=["_lh", "_la"])
 
 
 def make_results() -> pd.DataFrame:

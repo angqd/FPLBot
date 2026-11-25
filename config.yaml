@@ -29,8 +29,26 @@ team_model:
   seasons: ["2526", "2627"]
   cache_max_age_hours: 12  # CSVs cached under DATA_DIR/cache/
   xi: 0.0019               # time decay per day (half-life ~1 year)
-  goals_weight: 0.5        # target = 0.5*goals + 0.5*xG (goals only when xG missing)
-  ridge_sigma: 0.2         # shrink att/def toward league average (helps promoted teams)
+  # Fit target per side = weighted mean of the sources present for that match (weights are
+  # renormalised when one is missing: 25/26 has no xG, a few rows lack odds). The betting market
+  # (de-vigged closing 1X2 + over/under 2.5 -> two Poisson means) is the best public predictor
+  # and already prices in injuries, managers and promoted-club quality, so it gets the joint-top
+  # weight; xG is a less noisy measure of chance quality than goals; goals keep a share because
+  # they are what FPL pays on and they catch finishing/xG-model bias for elite sides.
+  target_weights: {goals: 0.30, xg: 0.35, odds: 0.35}
+  ridge_sigma: 0.2         # prior sd of att/def around their prior mean (0, or the promoted prior)
+  # Clubs promoted this season (in the latest season's results but not the previous season's)
+  # are shrunk toward this prior instead of league average. Estimated with
+  # `python -m fplbot.model.promoted_prior` (2026-11-26): each E0 season 2016/17..2025/26 fitted
+  # on its own (no decay, ridge sd 1, same target weights, goals+odds since no xG), ratings
+  # centred on that season's 20 clubs; mean over the 30 promoted club-seasons:
+  # att -0.282 (sd 0.141), def -0.205 (sd 0.144), i.e. ~0.75x average goals for, ~1.23x against.
+  # Ridge lets the data take over: prior weight on a rating ~ 25/(25 + matches*~1.3).
+  promoted_prior: {enabled: true, att: -0.28, def: -0.21}
+  # Optional fixture-level odds for upcoming matches (The Odds API). No-op unless the env var
+  # ODDS_API_KEY is set; only used on live fits. 2 credits/request, cached for cache_hours.
+  # Final λ = model^(1-w) * market^w for fixtures with odds.
+  odds_api: {enabled: true, blend_weight: 0.5, cache_hours: 12, regions: uk}
 
 # ---- LLM judge (optional) -------------------------------------------------
 judge:
