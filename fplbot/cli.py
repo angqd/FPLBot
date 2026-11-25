@@ -4,6 +4,7 @@
   fplbot draft             build the best £100m squad from scratch for the next GW
   fplbot plan              plan transfers/roll for your real team (needs auth)
   fplbot run               the weekly job: ingest -> plan -> (judge) -> execute if in window
+  fplbot backtest          score projections vs FPL ep on past GWs (fplbot/eval)
 --offline PATH uses a saved bootstrap/fixtures pair instead of the API: a dir with
 {bootstrap,fixtures}.json (tests/fixtures), an ingest snapshot dir (data/raw/<ts>/ with .json.gz),
 data/raw itself (newest snapshot), or the literal `latest` (newest snapshot in DATA_DIR/raw).
@@ -184,6 +185,42 @@ def run(config: Path = typer.Option(None), force: bool = typer.Option(False, hel
     result = execute(client, cfg.entry_id, chosen, dry_run=cfg.execute["dry_run"])
     store.record_decision(gw, {"plan": chosen, "judge": reason, "result": result}, executed=not result["dry_run"])
     typer.echo(json.dumps(result, indent=1)[:2000])
+
+
+@app.command()
+def backtest(config: Path = typer.Option(None),
+             season: list[str] = typer.Option(None, "--season", help="e.g. 2026-27 (repeatable); default eval.seasons"),
+             horizon: list[int] = typer.Option(None, "--horizon", help="repeatable; default eval.horizons"),
+             gw: list[int] = typer.Option(None, "--gw", help="limit target GWs (repeatable)"),
+             offline: bool = typer.Option(False, "--offline", help="use cached data only (DATA_DIR/cache)"),
+             out: Path = typer.Option(None, help="output dir (default DATA_DIR/eval)")):
+    """Score projections vs FPL's frozen ep and a naive baseline on past GWs (point-in-time)."""
+    import time as _time
+
+    from fplbot.eval import backtest as bt
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    cfg = load_config(config).raw
+    t0 = _time.time()
+    sds, res = bt.load_all(cfg, seasons=season or None, offline=offline)
+    for sd in sds:
+        src: dict[str, list[int]] = {}
+        for g in sorted(sd.ep_gws() & set(sd.finished_gws)):
+            src.setdefault(sd.ep_source(g), []).append(g)
+        typer.echo(f"{sd.season}: finished GWs {sd.finished_gws[0]}-{sd.finished_gws[-1]}; ep baseline: "
+                   + "; ".join(f"{s} GW{','.join(map(str, gs))}" for s, gs in src.items())
+                   + f"; availability recovered GW{','.join(map(str, sorted(sd.avail_gws())))}")
+    r = bt.run_backtest(sds, cfg, res, horizons=horizon or None, gws=gw or None)
+    scopes = [("all_gws", "all evaluated GWs"),
+              ("avail_gws", "GWs with recovered injury/availability flags (fairest)")]
+    scopes += [(f"season:{sd.season}", f"season {sd.season}") for sd in sds]
+    for scope, title in scopes:
+        typer.secho(f"\n=== {title} ===", bold=True)
+        typer.echo(bt.format_table(r.summary, scope))
+    typer.echo("\nep_posthoc = vaastav xP, recomputed after the GW with its own points: LEAKY, reference only.")
+    paths = bt.save(r, out or fpl_config.DATA_DIR / "eval")
+    typer.echo(f"\nSaved {paths['summary_csv'].parent}/ ({paths['summary_csv'].name} ...). "
+               f"Runtime {_time.time() - t0:.0f}s (backtest {r.info['runtime_s']}s).")
 
 
 if __name__ == "__main__":
