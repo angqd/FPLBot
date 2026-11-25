@@ -32,6 +32,18 @@ team_model:
   goals_weight: 0.5        # target = 0.5*goals + 0.5*xG (goals only when xG missing)
   ridge_sigma: 0.2         # shrink att/def toward league average (helps promoted teams)
 
+# ---- Backtest (fplbot backtest, fplbot/eval/) ------------------------------
+# Point-in-time replay of past GWs vs FPL's frozen ep. Data: vaastav/Fantasy-Premier-League
+# + FPL event/live, cached under DATA_DIR/cache; results written to DATA_DIR/eval.
+eval:
+  seasons: ["2026-27", "2025-26"]
+  current_season: "2026-27"  # refreshed after cache_max_age_hours; past seasons cached forever
+  min_gw: 2                  # first target GW (GW1 has no history)
+  horizons: [1, 3]
+  top_n: 100                 # decision set = union of each model's top N
+  use_availability: true     # injury flags at each deadline, recovered from FPL's frozen chance_this_round
+  cache_max_age_hours: 12
+
 # ---- LLM judge (optional) -------------------------------------------------
 judge:
   enabled: false
