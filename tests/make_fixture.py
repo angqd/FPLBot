@@ -1,9 +1,17 @@
 """Generate a synthetic bootstrap-static + fixtures pair with the real API's field names,
-so the pipeline can be tested offline (CI, or when the FPL API is down)."""
+so the pipeline can be tested offline (CI, or when the FPL API is down).
+
+Team strength_attack_*/strength_defence_* are 0, mirroring the live API; a synthetic results
+history (football-data.co.uk column names) is generated from the hidden team quality so a
+TeamModel can be fitted offline (`make_results()`, written as results.csv)."""
 import json
 import random
 import sys
+from datetime import date, timedelta
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 random.seed(7)
 NEXT_GW = 13
@@ -15,10 +23,10 @@ def make():
         q = random.gauss(0, 1)
         teams.append({
             "id": i, "name": f"Club {i}", "short_name": f"C{i:02d}",
-            "strength_attack_home": int(1150 + 90 * q + random.gauss(0, 20)),
-            "strength_attack_away": int(1110 + 90 * q + random.gauss(0, 20)),
-            "strength_defence_home": int(1150 + 90 * q + random.gauss(0, 20)),
-            "strength_defence_away": int(1110 + 90 * q + random.gauss(0, 20)),
+            "strength": None,
+            "strength_overall_home": 3, "strength_overall_away": 3,
+            "strength_attack_home": 0, "strength_attack_away": 0,
+            "strength_defence_home": 0, "strength_defence_away": 0,
             "_q": q,
         })
     elements, pid = [], 1
@@ -50,7 +58,7 @@ def make():
                 })
                 pid += 1
     for t in teams:
-        del t["_q"]
+        TEAM_QUALITY[t["name"]] = t.pop("_q")
     events = [{"id": g, "is_next": g == NEXT_GW, "finished": g < NEXT_GW,
                "deadline_time": f"2026-12-{min(28, g):02d}T11:00:00Z"} for g in range(1, 39)]
     # double round robin via circle method
@@ -67,10 +75,52 @@ def make():
     return {"elements": elements, "teams": teams, "events": events}, fixtures
 
 
+TEAM_QUALITY: dict[str, float] = {}  # filled by make(); hidden quality used to simulate results
+
+
+def _round_robin(names):
+    ids = list(names)
+    rounds = []
+    for _ in range(len(ids) - 1):
+        rounds.append([(ids[i], ids[-1 - i]) for i in range(len(ids) // 2)])
+        ids = [ids[0]] + [ids[-1]] + ids[1:-1]
+    return rounds + [[(a, h) for h, a in r] for r in rounds]
+
+
+def simulate_results(att: dict, dfn: dict, mu=0.25, home=0.25, seasons=2, current_rounds=0,
+                     seed=11, start=date(2024, 8, 17)) -> pd.DataFrame:
+    """Poisson results (goals + noisy xG) from known ratings, football-data column layout."""
+    rng = np.random.default_rng(seed)
+    names = sorted(att)
+    rows = []
+    rounds = [r for _ in range(seasons) for r in _round_robin(names)] + _round_robin(names)[:current_rounds]
+    for k, rnd in enumerate(rounds):
+        season, wk = divmod(k, 2 * (len(names) - 1))
+        d = start + timedelta(days=365 * season + 7 * wk)
+        for h, a in rnd:
+            lh = np.exp(mu + home + att[h] - dfn[a])
+            la = np.exp(mu + att[a] - dfn[h])
+            rows.append({"Date": d.strftime("%d/%m/%Y"), "HomeTeam": h, "AwayTeam": a,
+                         "FTHG": int(rng.poisson(lh)), "FTAG": int(rng.poisson(la)),
+                         "HxG": round(float(lh * rng.gamma(8, 1 / 8)), 2),
+                         "AxG": round(float(la * rng.gamma(8, 1 / 8)), 2)})
+    return pd.DataFrame(rows)
+
+
+def make_results() -> pd.DataFrame:
+    """Last season + the current season up to NEXT_GW-1, from the teams make() generated."""
+    if not TEAM_QUALITY:
+        make()
+    att = {n: 0.25 * q for n, q in TEAM_QUALITY.items()}
+    dfn = {n: 0.25 * q for n, q in TEAM_QUALITY.items()}
+    return simulate_results(att, dfn, seasons=1, current_rounds=NEXT_GW - 1, start=date(2025, 8, 16))
+
+
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent / "fixtures")
     out.mkdir(parents=True, exist_ok=True)
     bs, fx = make()
     (out / "bootstrap.json").write_text(json.dumps(bs))
     (out / "fixtures.json").write_text(json.dumps(fx))
+    make_results().to_csv(out / "results.csv", index=False)
     print(f"wrote {len(bs['elements'])} players, {len(fx)} fixtures to {out}")

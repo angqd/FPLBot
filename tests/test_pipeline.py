@@ -4,9 +4,10 @@ import pytest
 
 from fplbot.config import SQUAD_SHAPE, load_config
 from fplbot.execute.executor import build_lineup_payload, build_transfer_payload
+from fplbot.model.team_strength import fit_team_model
 from fplbot.model.xpts import project
 from fplbot.optimize.solver import SquadState, candidate_plans, solve
-from tests.make_fixture import NEXT_GW, make
+from tests.make_fixture import NEXT_GW, make, make_results
 
 CFG = load_config().raw
 
@@ -14,7 +15,8 @@ CFG = load_config().raw
 @pytest.fixture(scope="module")
 def data():
     bs, fx = make()
-    proj = project(bs, fx, NEXT_GW, 3, CFG["model"])
+    tm = fit_team_model(bs, CFG, results=make_results())
+    proj = project(bs, fx, NEXT_GW, 3, CFG["model"], team_model=tm)
     return bs, fx, proj
 
 
