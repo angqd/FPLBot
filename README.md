@@ -37,6 +37,13 @@ fplbot run --force          # the full weekly job (dry-run until you flip execut
 ```
 
 Offline / CI: `python tests/make_fixture.py && fplbot draft --offline tests/fixtures`, `pytest`.
+`--offline` also takes an ingest snapshot (`data/raw/<ts>/`, gzipped) or `latest` (newest snapshot).
+
+Second account (profiles): `cp .env.example .env.bot`, fill it for the other account, then
+`fplbot --profile bot plan` (or `FPLBOT_PROFILE=bot`). The profile loads only `.env.bot`, writes
+its rotated refresh token back there, and keeps its decisions DB in `data/bot/` so idempotency
+records don't collide with the main account; public-data snapshots in `data/raw/` stay shared.
+`FPLBOT_ENV_FILE=/path/to/envfile` selects an env file explicitly. `.env.*` files are gitignored.
 
 ## Scheduling
 `fplbot run` is idempotent. Every invocation snapshots data (this builds price and form

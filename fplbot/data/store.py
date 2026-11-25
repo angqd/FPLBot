@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fplbot.config import DATA_DIR
+from fplbot import config
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS player_snapshots (
@@ -25,11 +25,18 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 
 def _db(path: Path | None = None) -> sqlite3.Connection:
-    path = path or DATA_DIR / "fplbot.sqlite"
+    """Shared DB (public player snapshots) by default; pass _state_db_path() for decisions."""
+    path = path or config.DATA_DIR / "fplbot.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
     return con
+
+
+def _state_db_path() -> Path:
+    """Per-profile DB for decisions, so two accounts' idempotency records never collide.
+    Default profile: DATA_DIR/fplbot.sqlite (unchanged); profile X: DATA_DIR/X/fplbot.sqlite."""
+    return config.STATE_DIR / "fplbot.sqlite"
 
 
 def current_gw(bootstrap: dict) -> int:
@@ -45,7 +52,7 @@ def current_gw(bootstrap: dict) -> int:
 
 def save_snapshot(bootstrap: dict, fixtures: list[dict]) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-    raw = DATA_DIR / "raw" / ts
+    raw = config.DATA_DIR / "raw" / ts
     raw.mkdir(parents=True, exist_ok=True)
     for name, obj in (("bootstrap", bootstrap), ("fixtures", fixtures)):
         with gzip.open(raw / f"{name}.json.gz", "wt") as f:
@@ -68,19 +75,40 @@ def save_snapshot(bootstrap: dict, fixtures: list[dict]) -> str:
     return ts
 
 
+def _read_json(d: Path, name: str):
+    plain, gz = d / f"{name}.json", d / f"{name}.json.gz"
+    if plain.exists():
+        return json.loads(plain.read_text())
+    if gz.exists():
+        with gzip.open(gz, "rt") as f:
+            return json.load(f)
+    raise FileNotFoundError(f"No {name}.json or {name}.json.gz in {d}")
+
+
+def load_dir(path: Path) -> tuple[dict, list[dict]]:
+    """Load bootstrap + fixtures from a directory holding {bootstrap,fixtures}.json[.gz]
+    (tests/fixtures, or one data/raw/<ts>/ snapshot). A directory of snapshots (data/raw)
+    resolves to its newest snapshot."""
+    path = Path(path)
+    if not path.is_dir():
+        raise FileNotFoundError(f"Offline path {path} is not a directory")
+    if not any((path / f"bootstrap{ext}").exists() for ext in (".json", ".json.gz")):
+        runs = sorted(p for p in path.iterdir() if p.is_dir() and any(p.glob("bootstrap.json*")))
+        if not runs:
+            raise FileNotFoundError(f"No bootstrap.json[.gz] in {path} or its subdirectories")
+        path = runs[-1]
+    return _read_json(path, "bootstrap"), _read_json(path, "fixtures")
+
+
 def load_latest() -> tuple[dict, list[dict]]:
-    runs = sorted((DATA_DIR / "raw").glob("*"))
-    if not runs:
+    raw = config.DATA_DIR / "raw"
+    if not raw.is_dir() or not any(raw.iterdir()):
         raise FileNotFoundError("No snapshots yet — run `fplbot ingest` first")
-    out = []
-    for name in ("bootstrap", "fixtures"):
-        with gzip.open(runs[-1] / f"{name}.json.gz", "rt") as f:
-            out.append(json.load(f))
-    return out[0], out[1]
+    return load_dir(raw)
 
 
 def record_decision(gw: int, plan: dict, executed: bool):
-    with _db() as con:
+    with _db(_state_db_path()) as con:
         con.execute(
             "INSERT OR REPLACE INTO decisions VALUES (?,?,?,?)",
             (gw, datetime.now(timezone.utc).isoformat(), json.dumps(plan), int(executed)),
@@ -88,6 +116,6 @@ def record_decision(gw: int, plan: dict, executed: bool):
 
 
 def already_executed(gw: int) -> bool:
-    with _db() as con:
+    with _db(_state_db_path()) as con:
         row = con.execute("SELECT executed FROM decisions WHERE gw=?", (gw,)).fetchone()
     return bool(row and row[0])
