@@ -17,12 +17,12 @@ Phases 0-2 of the roadmap in `docs/research/report.md` are done. Everything runs
 | Team model (`model/team_strength.py`, `model/odds.py`) | Time-decayed Poisson fit on football-data.co.uk (goals 0.30, xG 0.35, odds-implied 0.35). Promoted-club prior (att -0.28, def -0.21). Optional Odds API blend, off without `ODDS_API_KEY`. |
 | Player model (`model/xpts.py`) | Minutes model, shrinkage to position x price priors, DefCon Poisson tail, bonus blend. `blend_fpl_ep: 0` (backtest showed blending hurts). |
 | Backtest (`eval/`, `fplbot backtest`) | Point-in-time replay of past GWs. 2026/27 GW2-11 next-GW MAE 1.94 vs FPL ep 2.33. `evaluate_configs()` for tuning. |
-| MILP optimiser (`optimize/solver.py`) | Working. Draft + multi-GW planning, FT banking (cap 5), K candidate plans. Unlimited-transfer flag for Wildcard/Free Hit in progress. |
+| MILP optimiser (`optimize/solver.py`) | Working. Draft + multi-GW planning, FT banking (cap 5), K candidate plans. Wildcard/Free Hit: unlimited first GW (`SquadState.unlimited_first_gw`); Free Hit revert not modelled. |
 | Auth (`data/auth.py`) | Verified live: PingOne refresh + rotation. `--profile NAME` uses `.env.NAME`. |
 | Executor (`execute/executor.py`) | Payload shapes match the web app. `dry_run: true`. Never submitted. |
 | LLM judge (`judge/llm_judge.py`) | Written, untested. Off by default. Phase 4. |
 | Scheduling | **Open question.** `.github/workflows/weekly.yml` is kept local only (gitignored, schedule commented out). Choose cron, GitHub Actions or manual before shadow mode. Only one place may hold the refresh token, because it rotates. |
-| Tests | 57 pass: `python tests/make_fixture.py && pytest -q` |
+| Tests | 61 pass: `python tests/make_fixture.py && pytest -q` |
 
 `VIABILITY_LOG.md` (local only, gitignored) holds the dated evidence for every check.
 
@@ -99,7 +99,7 @@ Write each result into the "Viability results" table below as you go.
 1. Tune with the backtest: `ridge_sigma` (0.2 also shrinks top clubs: MCI att 0.25 vs 0.36 unshrunk),
    shrinkage `k`, bonus blend. Model under-projects by ~0.7 pts on average, mostly premiums.
 2. Phase 3: HiGHS solver (drops the PuLP pin), FT value by state, bench weights, bank value, noise voting.
-3. Chips: Free Hit revert, Bench Boost, Triple Captain (Wildcard/Free Hit unlimited transfers in progress).
+3. Chips: Free Hit revert, Bench Boost, Triple Captain (Wildcard/Free Hit unlimited transfers done).
 4. Price-change timing. Snapshots store `transfers_in_event/out_event` for it.
 5. Phase 4 LLM: news extractor with bounded adjustments, judge as tie-breaker only.
 6. Selling price for players bought *within* the horizon uses current cost (ignores half-profit). Fine for planning.
