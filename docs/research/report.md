@@ -12,6 +12,12 @@ Two things still stand between us and a working bot. We haven't confirmed that F
 
 ## Where we stand
 
+> **Update, 26 Nov 2026.** Phases 0 to 2 are done. The viability gate passed (login, selling
+> prices and payloads all work), the bugs below are fixed, and the bot runs end to end on live
+> data in dry run. In a backtest of 2026/27 GW2-11 our next-gameweek error is 1.94 points
+> against 2.33 for FPL's own `ep_next`. Phase 3 is next. The tables below are the original
+> pitch, kept for the record.
+
 ### Headline numbers
 
 | Number | What it means |
@@ -143,13 +149,13 @@ We passed on deep reinforcement learning. Dream11's cricket results came from it
 
 ## Roadmap
 
-| Phase | What ships | Time | Gate to move on |
-| --- | --- | --- | --- |
-| 0. Finish the viability gate | Your login captured, selling prices checked, transfer format matched | 20 minutes of your time | Selling prices exist and payloads match. If not, we stop |
-| 1. Unblock live runs | Dixon-Coles team model, free transfer floor fix, offline snapshot fix | 1 to 2 days | `fplbot draft` and `plan` run cleanly on live data |
-| 2. Better projections | Minutes model, shrinkage, DefCon probability, bonus fix, odds blend, scoring harness | About 1 week | Our error beats `ep_next` on frozen projections |
-| 3. Optimiser upgrades | HiGHS, new settings, noise voting | 3 to 4 days | 4 to 6 gameweeks in dry-run shadow mode, then your OK to submit for real |
-| 4. LLM and extras | News extractor, tie-break judge, price timing, triple captain, then chips | 1 to 2 weeks | Shadow-mode results beat plan 0 |
+| Phase | What ships | Time | Gate to move on | Status |
+| --- | --- | --- | --- | --- |
+| 0. Finish the viability gate | Your login captured, selling prices checked, transfer format matched | 20 minutes of your time | Selling prices exist and payloads match. If not, we stop | Done 25 Nov |
+| 1. Unblock live runs | Dixon-Coles team model, free transfer floor fix, offline snapshot fix | 1 to 2 days | `fplbot draft` and `plan` run cleanly on live data | Done 25 Nov |
+| 2. Better projections | Minutes model, shrinkage, DefCon probability, bonus fix, odds blend, scoring harness | About 1 week | Our error beats `ep_next` on frozen projections | Done 26 Nov (1.94 vs 2.33) |
+| 3. Optimiser upgrades | HiGHS, new settings, noise voting | 3 to 4 days | 4 to 6 gameweeks in dry-run shadow mode, then your OK to submit for real | Next |
+| 4. LLM and extras | News extractor, tie-break judge, price timing, triple captain, then chips | 1 to 2 weeks | Shadow-mode results beat plan 0 | Not started |
 
 Nothing gets submitted to FPL until phase 3 passes and you say so.
 

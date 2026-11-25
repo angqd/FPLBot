@@ -9,17 +9,22 @@ either roll the free transfer or make up to two (no -4 hits by default), set XI 
 and submit — with minimal manual work.
 
 ## Status (as of 2026-11-26)
+Phases 0-2 of the roadmap in `docs/research/report.md` are done. Everything runs in dry run.
+
 | Area | State |
 |---|---|
-| Data ingest (`data/fpl_client.py`, `data/store.py`) | Written. **Never run against the live API** (scaffold built in a sandbox with no FPL access). |
-| xPts model (`model/xpts.py`) | Written + tested on synthetic data only. Uncalibrated. |
-| MILP optimiser (`optimize/solver.py`) | Working. Draft + multi-GW transfer planning, exact FT banking (cap 5), no-good cuts for K candidates. ~5s solve on 500 players × 3 GWs. |
-| LLM judge (`judge/llm_judge.py`) | Written, untested (no API key in sandbox). Off by default. |
-| Auth (`data/auth.py`) | Written against PingOne OIDC refresh-token flow. **Unverified** — token URL, client_id, and form fields are placeholders from .env. |
-| Executor (`execute/executor.py`) | Builds transfer + lineup payloads. **Payload shapes unverified** against current FPL. `dry_run: true` by default. |
-| Scheduler (`.github/workflows/weekly.yml`) | Written, never run. |
-| Phase 2 projections | **Done, gate passed** (2026-11-26). Minutes model, shrinkage, DefCon Poisson tail, bonus blend (`model/xpts.py`); promoted-club prior + odds target (`model/team_strength.py`, `model/odds.py`). Backtest `fplbot backtest` (`eval/`): next-GW MAE 1.94 vs FPL ep 2.33 on 2026/27 GW2-11. Next: tune with `evaluate_configs()`, blend_fpl_ep -> ~0. |
+| Data ingest (`data/fpl_client.py`, `data/store.py`) | Working against the live API. gz snapshots in `data/raw/` (gitignored). |
+| Team model (`model/team_strength.py`, `model/odds.py`) | Time-decayed Poisson fit on football-data.co.uk (goals 0.30, xG 0.35, odds-implied 0.35). Promoted-club prior (att -0.28, def -0.21). Optional Odds API blend, off without `ODDS_API_KEY`. |
+| Player model (`model/xpts.py`) | Minutes model, shrinkage to position x price priors, DefCon Poisson tail, bonus blend. `blend_fpl_ep: 0` (backtest showed blending hurts). |
+| Backtest (`eval/`, `fplbot backtest`) | Point-in-time replay of past GWs. 2026/27 GW2-11 next-GW MAE 1.94 vs FPL ep 2.33. `evaluate_configs()` for tuning. |
+| MILP optimiser (`optimize/solver.py`) | Working. Draft + multi-GW planning, FT banking (cap 5), K candidate plans. Unlimited-transfer flag for Wildcard/Free Hit in progress. |
+| Auth (`data/auth.py`) | Verified live: PingOne refresh + rotation. `--profile NAME` uses `.env.NAME`. |
+| Executor (`execute/executor.py`) | Payload shapes match the web app. `dry_run: true`. Never submitted. |
+| LLM judge (`judge/llm_judge.py`) | Written, untested. Off by default. Phase 4. |
+| Scheduling | **Open question.** `.github/workflows/weekly.yml` is kept local only (gitignored, schedule commented out). Choose cron, GitHub Actions or manual before shadow mode. Only one place may hold the refresh token, because it rotates. |
 | Tests | 57 pass: `python tests/make_fixture.py && pytest -q` |
+
+`VIABILITY_LOG.md` (local only, gitignored) holds the dated evidence for every check.
 
 ## STEP 1 — Viability gate (do this before ANY other work)
 The project isn't confirmed viable yet. Before improving the model, adding features or
@@ -72,10 +77,11 @@ Write each result into the "Viability results" table below as you go.
 | 1e verdict to user | **Viable with fixes** (2026-11-25) | APIs, auth, prices and payloads all work. Fixes before live runs: (1) team strengths are 0 → replace with Dixon-Coles (`model/xpts.py`); (2) `cli._state_from_api` FT floor `max(1, …)` and `limit or 1` → use web-app formula, handle `limit: null`; (3) `--offline` can't read gz snapshots. User confirmed going ahead with the plan in docs/research/report.md. |
 
 ## After the gate passes
-1. `fplbot draft` — sanity-check the squad (premiums present? no injured players? bank ≥ 0).
-2. `fplbot plan` against the live team.
+1. ~~`fplbot draft` sanity check~~ done 2026-11-25.
+2. ~~`fplbot plan` against the live team~~ done 2026-11-25.
 3. Run `fplbot run --force` once in dry-run and review the decision row in `data/fplbot.sqlite`.
-4. With the user's OK, set `execute.dry_run: false`.
+4. Phase 3 (HiGHS, solver settings, noise voting), then 4-6 GWs of shadow mode.
+5. Only with the user's OK, set `execute.dry_run: false`.
 
 ## Design decisions (don't undo without reason)
 - **Official FPL API only, no scraping.** bootstrap-static already has prices, news, ep_next,
@@ -90,17 +96,17 @@ Write each result into the "Viability results" table below as you go.
   at most once per GW (`decisions` table).
 
 ## Known gaps / backlog (rough priority)
-1. Chips: wildcard (= solve with unlimited free moves in GW1, like draft mode), free hit
-   (single-GW squad, revert next GW), bench boost (bench_weight=1 for that GW), triple captain.
-2. Selling price for players bought *within* the horizon uses current cost (ignores the
-   half-profit rule). Fine for planning; real selling prices come from `my-team` for owned players.
-3. No price-change prediction. Snapshots already store `transfers_in_event/out_event` for it.
-4. xPts calibration: backtest against vaastav/Fantasy-Premier-League history; consider replacing
-   the hand-tuned model with a learned one behind the same `project()` signature.
-5. Model scoring constants (`DEFAULT_SCORING`) are fallbacks — verify GK goal points and DefCon
-   thresholds for 2026/27; read `game_config.scoring` from bootstrap if present.
-6. Notifications (Telegram/email) after each decision.
-7. GitHub Actions refresh-token rotation needs a `GH_PAT` secret with Secrets: write.
+1. Tune with the backtest: `ridge_sigma` (0.2 also shrinks top clubs: MCI att 0.25 vs 0.36 unshrunk),
+   shrinkage `k`, bonus blend. Model under-projects by ~0.7 pts on average, mostly premiums.
+2. Phase 3: HiGHS solver (drops the PuLP pin), FT value by state, bench weights, bank value, noise voting.
+3. Chips: Free Hit revert, Bench Boost, Triple Captain (Wildcard/Free Hit unlimited transfers in progress).
+4. Price-change timing. Snapshots store `transfers_in_event/out_event` for it.
+5. Phase 4 LLM: news extractor with bounded adjustments, judge as tie-breaker only.
+6. Selling price for players bought *within* the horizon uses current cost (ignores half-profit). Fine for planning.
+7. Hosting / scheduling (open question, see Status). If GitHub Actions: secrets plus a `GH_PAT` with
+   Secrets: write to persist the rotated token; the snapshot-commit step is moot now `data/raw/` is ignored.
+8. Mirror account: user to create `.env.bot`, then `python scripts/viability_check.py --profile bot`.
+9. Notifications (Telegram/email) after each decision.
 
 ## Gotchas
 - Cloud sandbox couldn't reach fantasy.premierleague.com — use `--offline tests/fixtures` there.
@@ -108,17 +114,25 @@ Write each result into the "Viability results" table below as you go.
   already optimal for the window. Don't "fix" that; judge rolling behaviour on real data.
 - FPL requires the substitute GK in bench slot 12; `solve()` orders bench GK-first for that reason.
 - Draft mode prints `FT=0` for the first GW — cosmetic.
+- vaastav's `xP` is recomputed after each GW (leaky). The backtest rebuilds FPL's ep from form instead.
+- New `project()` columns must not start with `xp_`: the solver reads every `xp_*` column as a GW.
 
 ## Map
 ```
-fplbot/cli.py               entry points: ingest | draft | plan | run
+fplbot/cli.py               entry points: ingest | draft | plan | run | backtest
 fplbot/config.py            config.yaml + .env loading, squad-shape constants
 fplbot/data/fpl_client.py   HTTP client (rate-limited, retries, auth header)
 fplbot/data/auth.py         OIDC refresh → access token, persists rotated token to .env
 fplbot/data/store.py        gz raw snapshots + SQLite (player_snapshots, decisions)
-fplbot/model/xpts.py        project(bootstrap, fixtures, gw, horizon, cfg) -> DataFrame xp_<gw>
+fplbot/model/team_strength.py  fit_team_model() -> TeamModel (Poisson ratings, promoted prior)
+fplbot/model/odds.py        odds -> implied expected goals
+fplbot/model/odds_api.py    optional Odds API blend for upcoming fixtures
+fplbot/model/promoted_prior.py  estimates the promoted-club prior from history
+fplbot/model/xpts.py        project(bootstrap, fixtures, gw, horizon, cfg, team_model) -> xp_<gw>, xmins, p_start
+fplbot/eval/                backtest: history.py (data), pit.py (point-in-time), backtest.py (metrics)
 fplbot/optimize/solver.py   SquadState, solve(), candidate_plans()
 fplbot/judge/llm_judge.py   judge(plans, news, model) -> (index, reason)
 fplbot/execute/executor.py  payload builders + execute(dry_run)
-tests/make_fixture.py       synthetic bootstrap/fixtures with real field names
+scripts/viability_check.py  read-only live checks of login, prices and payloads
+tests/make_fixture.py       synthetic bootstrap/fixtures/results with real field names
 ```
