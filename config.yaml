@@ -15,7 +15,7 @@ max_per_club: 3
 
 # ---- Projection model -----------------------------------------------------
 model:
-  blend_fpl_ep: 0.35       # weight of FPL's own ep_next in GW+1 projection (0 = pure model)
+  blend_fpl_ep: 0.0        # weight of FPL's own ep_next in GW+1 projection (0 = pure model)
   league_avg_goals: 1.40   # legacy strength_* fallback only
   home_advantage: 1.10     # legacy strength_* fallback only
   minutes:                 # xMins model (bootstrap-static only)

@@ -18,3 +18,4 @@ data/cache/
 
 # local-only notes (kept on disk, not pushed)
 VIABILITY_LOG.md
+.github/workflows/
