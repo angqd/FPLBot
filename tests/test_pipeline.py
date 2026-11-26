@@ -109,3 +109,17 @@ def test_unlimited_first_gw_allows_many_free_transfers(data):
     n0 = normal["gameweeks"][0]
     assert len(n0["transfers_in"]) <= 1 and n0["hits"] == 0
     assert wc["objective"] > normal["objective"]
+
+
+
+def test_bench_boost_and_forced_transfers(data):
+    """transfers_by_gw forces an exact move count (hits allowed); bench_boost_gw values the bench fully."""
+    _, _, proj = data
+    t0, t1 = NEXT_GW, NEXT_GW + 1
+    d = solve(proj, SquadState(bank=100.0), CFG)["gameweeks"][0]
+    picks = {p["id"]: p["cost"] for p in d["starting_xi"] + d["bench"]}
+    st = SquadState(picks=picks, bank=d["bank"], free_transfers=1)
+    forced = solve(proj, st, {**CFG, "allow_hits": True, "transfers_by_gw": {t0: 3}})["gameweeks"][0]
+    assert len(forced["transfers_in"]) == 3 and forced["hits"] == 2
+    bench = lambda c: sum(p["xp"] for p in solve(proj, SquadState(bank=100.0), c)["gameweeks"][1]["bench"])  # noqa: E731
+    assert bench({**CFG, "bench_boost_gw": t1}) >= bench(CFG) - 1e-6

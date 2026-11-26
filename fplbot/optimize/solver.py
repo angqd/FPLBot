@@ -108,6 +108,9 @@ def solve(
         m += bank[t] == bprev + pulp.lpSum(sell[p] * out[p][t] - cost[p] * buy[p][t] for p in P)
 
         m += n[t] == pulp.lpSum(buy[p][t] for p in P)
+        forced = (cfg.get("transfers_by_gw") or {}).get(t)  # what-if: exactly N moves this GW
+        if forced is not None:
+            m += n[t] == forced
         if state.is_draft and i == 0:  # initial squad build: free, unlimited
             m += paid[t] == 0
             m += ft[gws[1] if len(gws) > 1 else t + 1] == 1
@@ -119,7 +122,7 @@ def solve(
             # banked FTs carry through the chip (+1). Free Hit revert next GW: not modelled.
             m += ft[gws[1] if len(gws) > 1 else t + 1] <= state.free_transfers + 1
             continue
-        m += n[t] <= cfg["max_transfers_per_gw"]
+        m += n[t] <= max(cfg["max_transfers_per_gw"], forced or 0)
         m += paid[t] >= n[t] - ft[t]
         m += paid[t] <= n[t] - ft[t] + M * (1 - z[t])
         m += paid[t] <= M * z[t]
@@ -138,7 +141,8 @@ def solve(
     obj = []
     for i, t in enumerate(gws):
         w = cfg["decay"] ** i
-        obj.append(w * pulp.lpSum(xp[p, t] * (xi[p][t] + cap[p][t] + cfg["bench_weight"] * (sq[p][t] - xi[p][t])) for p in P))
+        bw = 1.0 if t == cfg.get("bench_boost_gw") else cfg["bench_weight"]  # Bench Boost: all 15 score
+        obj.append(w * pulp.lpSum(xp[p, t] * (xi[p][t] + cap[p][t] + bw * (sq[p][t] - xi[p][t])) for p in P))
         obj.append(-w * cfg["hit_cost"] * paid[t])
         if not (state.is_draft and i == 0):
             obj.append(-cfg["min_gain_per_transfer"] * n[t])
